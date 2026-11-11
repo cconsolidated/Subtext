@@ -133,8 +133,10 @@ kept, so the whole display can be paused and re-inspected.
   This fingerprint supports honest state-to-state comparison, but its columns
   are not learned concepts and should not be interpreted semantically. Switch
   between **state** and **layer Δ** to isolate what each displayed layer changed.
-  Every row also shows its RMS and similarity to the preceding layer; click a
-  row to expand its signed feature waveform and compare it with the prior layer.
+  Depth runs left-to-right over a feature-by-layer matrix, with an overview of
+  vector magnitude and update size above it. Click a layer to inspect its RMS,
+  similarity to the preceding layer, update size, and strongest projected
+  components.
 
 ## Method
 

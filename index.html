@@ -251,7 +251,7 @@
     </div>
     <div id="vector-controls" aria-label="vector display mode">
       <span class="rv on" data-rv="state" title="normalized residual state at each layer">state</span>
-      <span class="rv" data-rv="delta" title="change from the preceding displayed layer">layer Δ</span>
+      <span class="rv" data-rv="delta" title="change from the preceding displayed layer">change</span>
     </div>
     <div id="inspect">
       <span class="x">✕</span>
@@ -265,7 +265,7 @@
     <div id="foot">
       thoughts sink toward speech · <b>size</b> = strength ·
       <b style="color:var(--read)">amber</b> = while reading you ·
-      <b style="color:var(--think)">blue</b> = while replying · vector: <b>red −</b> / <b>blue +</b>
+      <b style="color:var(--think)">blue</b> = while replying
     </div>
     <div id="transport" class="hidden">
       <button id="t-start" title="jump to start">⏮</button>
@@ -688,26 +688,37 @@ function renderTrace() {
    keeping each frame compact. Each row is a model layer; columns are stable
    projected features. Values are normalized by that layer's coordinate RMS,
    clipped to ±3 z-like units, and quantized to signed int8 on the server. */
-const RESID_X0 = 72, RESID_RIGHT = 150;
 function residualFrame() { return cursor >= 0 ? frames[cursor] : null; }
 function residualGeometry(frame) {
   const rows = (frame && frame.resid) || [];
   const bins = rows.length ? rows[0][2].length : 64;
-  const heatTop = 102, waveBottom = H * .86;
-  const waveHeight = Math.max(72, Math.min(130, H * .20));
-  const waveTop = waveBottom - waveHeight;
-  const heatBottom = Math.max(heatTop + 80, waveTop - 48);
-  const yForIndex = index => rows.length < 2 ? heatTop
-    : heatTop + index * (heatBottom - heatTop) / (rows.length - 1);
+  const matrixLeft = 78, panelGap = 34;
+  const panelWidth = Math.max(230, Math.min(310, W * .255));
+  const matrixRight = Math.max(matrixLeft + 260, W - panelWidth - panelGap - 20);
+  const panelLeft = matrixRight + panelGap, panelRight = W - 20;
+  const chartTop = 124, chartBottom = 184, updateBase = 220;
+  const matrixTop = 264, matrixBottom = Math.max(matrixTop + 180, H - 94);
+  const layerW = (matrixRight - matrixLeft) / Math.max(1, rows.length);
+  const featureH = (matrixBottom - matrixTop) / Math.max(1, bins);
+  const xForIndex = index => matrixLeft + (index + .5) * layerW;
   return {
-    rows, bins, heatTop, heatBottom, waveTop, waveBottom, yForIndex,
-    cellW: (W - RESID_X0 - RESID_RIGHT) / Math.max(1, bins),
+    rows, bins, matrixLeft, matrixRight, matrixTop, matrixBottom, layerW, featureH,
+    panelLeft, panelRight, panelWidth, chartTop, chartBottom, updateBase, xForIndex,
   };
 }
 function residualCosine(a, b) {
   let dot = 0, aa = 0, bb = 0;
   for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; aa += a[i] ** 2; bb += b[i] ** 2; }
   return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
+}
+function residualUpdateSize(rows, index) {
+  if (index < 1) return 0;
+  let sum = 0;
+  for (let i = 0; i < rows[index][2].length; i++) {
+    const delta = rows[index][2][i] - rows[index - 1][2][i];
+    sum += delta * delta;
+  }
+  return Math.sqrt(sum / rows[index][2].length) / 127;
 }
 function residualDisplayValues(rows, index) {
   const values = rows[index][2];
@@ -718,112 +729,176 @@ function residualDisplayValues(rows, index) {
 function renderResidual() {
   ctx.clearRect(0, 0, W, H);
   const frame = residualFrame();
-  const geometry = residualGeometry(frame);
-  const { rows, bins, cellW, heatTop, heatBottom, waveTop, waveBottom, yForIndex } = geometry;
+  const g = residualGeometry(frame);
+  const { rows, bins, matrixLeft, matrixRight, matrixTop, matrixBottom, layerW, featureH,
+    panelLeft, panelRight, chartTop, chartBottom, updateBase, xForIndex } = g;
 
   ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "rgba(255,255,255,.84)"; ctx.font = `500 16px Inter, sans-serif`;
-  ctx.fillText("residual stream across layers", RESID_X0, heatTop - 52);
-  ctx.fillStyle = "rgba(255,255,255,.34)"; ctx.font = `10px ${MONO}`;
+  ctx.fillStyle = "rgba(255,255,255,.88)"; ctx.font = `500 19px Inter, sans-serif`;
+  ctx.fillText("Residual stream", matrixLeft, 74);
+  ctx.fillStyle = "rgba(255,255,255,.38)"; ctx.font = `11px Inter, sans-serif`;
   const subtitle = residualMode === "delta"
-    ? `${bins} features · change from previous displayed layer · red − / blue +`
-    : `${bins} signed hash features · normalized by layer RMS · red − / blue +`;
-  ctx.fillText(subtitle, RESID_X0, heatTop - 35);
+    ? `What each sampled layer changed across ${bins} stable projected features`
+    : `How ${bins} stable projected features evolve through the sampled layers`;
+  ctx.fillText(subtitle, matrixLeft, 94);
 
   if (!rows.length) {
     ctx.fillStyle = "rgba(255,255,255,.3)"; ctx.font = `13px Inter, sans-serif`;
     ctx.fillText(frames.length ? "this replay has no residual fingerprint data"
-                               : "send a message, then switch to vector", RESID_X0, (heatTop + heatBottom) / 2);
+                               : "send a message, then switch to vector", matrixLeft, H / 2);
     return;
   }
 
   if (residualSelectedLayer == null || !rows.some(row => row[0] === residualSelectedLayer))
     residualSelectedLayer = rows[rows.length - 1][0];
   const selectedIndex = Math.max(0, rows.findIndex(row => row[0] === residualSelectedLayer));
-  const rowH = Math.max(9, Math.min(20, (heatBottom - heatTop) / Math.max(1, rows.length - 1) * .55));
   const maxRms = Math.max(...rows.map(row => Number(row[1])), 1e-9);
+  const updateSizes = rows.map((_row, index) => residualUpdateSize(rows, index));
+  const maxUpdate = Math.max(...updateSizes, 1e-9);
 
-  // A connected layer spine makes depth and the selected layer legible.
-  ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 1; ctx.beginPath();
-  rows.forEach((_row, index) => index ? ctx.lineTo(42, yForIndex(index)) : ctx.moveTo(42, yForIndex(index)));
-  ctx.stroke();
-  ctx.fillStyle = "rgba(255,255,255,.22)"; ctx.font = `9px ${MONO}`;
-  ctx.fillText("FEATURE 1", RESID_X0, heatTop - 13);
-  ctx.fillText(`FEATURE ${bins}`, W - RESID_RIGHT - 48, heatTop - 13);
-  ctx.fillText("RMS", W - RESID_RIGHT + 14, heatTop - 13);
-  ctx.fillText("COS↑", W - 54, heatTop - 13);
+  // Overview: magnitude is a line; the amount written by each layer is a bar.
+  ctx.fillStyle = "rgba(255,255,255,.28)"; ctx.font = `8.5px ${MONO}`;
+  ctx.fillText("VECTOR MAGNITUDE", 16, chartTop + 7);
+  ctx.fillText("LAYER UPDATE", 16, updateBase - 2);
+  ctx.strokeStyle = "rgba(255,255,255,.07)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(matrixLeft, chartBottom + .5); ctx.lineTo(matrixRight, chartBottom + .5); ctx.stroke();
+  ctx.beginPath();
+  rows.forEach((row, index) => {
+    const x = xForIndex(index), y = chartBottom - Number(row[1]) / maxRms * (chartBottom - chartTop);
+    index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.lineTo(xForIndex(rows.length - 1), chartBottom); ctx.lineTo(xForIndex(0), chartBottom); ctx.closePath();
+  ctx.fillStyle = "rgba(108,184,224,.07)"; ctx.fill();
+  ctx.beginPath();
+  rows.forEach((row, index) => {
+    const x = xForIndex(index), y = chartBottom - Number(row[1]) / maxRms * (chartBottom - chartTop);
+    index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.strokeStyle = "rgba(126,194,230,.70)"; ctx.lineWidth = 1.5; ctx.stroke();
 
-  for (let index = 0; index < rows.length; index++) {
-    const [layer, rms] = rows[index], values = residualDisplayValues(rows, index), y = yForIndex(index);
+  rows.forEach((row, index) => {
+    const x = xForIndex(index), y = chartBottom - Number(row[1]) / maxRms * (chartBottom - chartTop);
+    const barH = updateSizes[index] / maxUpdate * 20;
+    ctx.fillStyle = index === selectedIndex ? "rgba(255,255,255,.74)" : "rgba(255,255,255,.22)";
+    ctx.fillRect(x - Math.min(16, layerW * .22), updateBase - barH, Math.min(32, layerW * .44), barH);
+    ctx.beginPath(); ctx.arc(x, y, index === selectedIndex ? 4 : 2.5, 0, Math.PI * 2); ctx.fill();
     if (index === selectedIndex) {
-      ctx.fillStyle = "rgba(255,255,255,.035)";
-      ctx.fillRect(12, y - rowH / 2 - 4, W - 24, rowH + 8);
+      ctx.strokeStyle = "rgba(255,255,255,.50)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, chartTop - 7); ctx.lineTo(x, matrixBottom + 1); ctx.stroke();
     }
-    ctx.fillStyle = index === selectedIndex ? "rgba(255,255,255,.78)" : "rgba(255,255,255,.30)";
-    ctx.font = `${index === selectedIndex ? "500" : "400"} 10px ${MONO}`;
-    ctx.textBaseline = "middle"; ctx.fillText("L" + layer, 18, y);
-    ctx.beginPath(); ctx.arc(42, y, index === selectedIndex ? 3.5 : 2, 0, 7); ctx.fill();
-    for (let column = 0; column < values.length; column++) {
-      const value = values[column], magnitude = Math.min(1, Math.abs(value) / (residualMode === "delta" ? 180 : 127));
+  });
+
+  // Layer × feature matrix: depth now reads left-to-right, like the model does.
+  ctx.fillStyle = "rgba(255,255,255,.24)"; ctx.font = `8.5px ${MONO}`;
+  ctx.fillText("PROJECTED FEATURE", 16, matrixTop - 18);
+  rows.forEach((row, index) => {
+    const x = xForIndex(index);
+    ctx.textAlign = "center";
+    ctx.fillStyle = index === selectedIndex ? "rgba(255,255,255,.90)" : "rgba(255,255,255,.38)";
+    ctx.font = `${index === selectedIndex ? "600" : "400"} 10px ${MONO}`;
+    ctx.fillText("L" + row[0], x, matrixTop - 18);
+    const values = residualDisplayValues(rows, index);
+    for (let feature = 0; feature < bins; feature++) {
+      const value = values[feature];
+      const magnitude = Math.min(1, Math.abs(value) / (residualMode === "delta" ? 180 : 127));
       const rgb = value < 0 ? "224,92,105" : "82,168,224";
-      ctx.fillStyle = magnitude < .015
-        ? "rgba(255,255,255,.025)"
-        : `rgba(${rgb},${(0.10 + 0.88 * magnitude).toFixed(3)})`;
-      ctx.fillRect(RESID_X0 + column * cellW, y - rowH / 2, Math.max(1, cellW - .7), rowH);
+      ctx.fillStyle = magnitude < .012 ? "rgba(255,255,255,.018)"
+        : `rgba(${rgb},${(0.08 + 0.88 * magnitude).toFixed(3)})`;
+      ctx.fillRect(matrixLeft + index * layerW + 2, matrixTop + feature * featureH,
+        Math.max(1, layerW - 4), Math.max(1, featureH - .65));
     }
-    const rmsWidth = 44 * Number(rms) / maxRms;
-    ctx.fillStyle = "rgba(255,255,255,.08)"; ctx.fillRect(W - RESID_RIGHT + 14, y - 2, 44, 4);
-    ctx.fillStyle = "rgba(255,255,255,.48)"; ctx.fillRect(W - RESID_RIGHT + 14, y - 2, rmsWidth, 4);
-    ctx.fillStyle = "rgba(255,255,255,.34)"; ctx.font = `9px ${MONO}`;
-    ctx.fillText(Number(rms).toFixed(3), W - RESID_RIGHT + 62, y);
-    if (index > 0) {
-      const cosine = residualCosine(rows[index - 1][2], rows[index][2]);
-      ctx.fillText(cosine.toFixed(2), W - 54, y);
-    } else ctx.fillText("—", W - 54, y);
+    if (residualMode === "delta" && index === 0) {
+      ctx.fillStyle = "rgba(8,8,10,.88)";
+      ctx.fillRect(matrixLeft + 2, matrixTop, Math.max(1, layerW - 4), matrixBottom - matrixTop);
+      ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,255,255,.24)"; ctx.font = `9px ${MONO}`;
+      ctx.fillText("baseline", x, (matrixTop + matrixBottom) / 2 - 5);
+      ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.font = `8px Inter, sans-serif`;
+      ctx.fillText("no prior sample", x, (matrixTop + matrixBottom) / 2 + 11);
+    }
+  });
+  ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.font = `8px ${MONO}`;
+  for (let feature = 0; feature < bins; feature += 8) {
+    const y = matrixTop + (feature + .5) * featureH;
+    ctx.fillStyle = "rgba(255,255,255,.22)"; ctx.fillText(`F${String(feature + 1).padStart(2, "0")}`, matrixLeft - 10, y);
+    ctx.strokeStyle = "rgba(255,255,255,.045)"; ctx.beginPath();
+    ctx.moveTo(matrixLeft, matrixTop + feature * featureH); ctx.lineTo(matrixRight, matrixTop + feature * featureH); ctx.stroke();
   }
+  ctx.strokeStyle = "rgba(255,255,255,.60)"; ctx.lineWidth = 1;
+  ctx.strokeRect(matrixLeft + selectedIndex * layerW + 1.5, matrixTop - 3,
+    layerW - 3, matrixBottom - matrixTop + 6);
+  ctx.textBaseline = "alphabetic"; ctx.font = `9px Inter, sans-serif`;
+  ctx.fillStyle = "rgba(255,255,255,.24)"; ctx.textAlign = "left";
+  ctx.fillText("earlier depth", matrixLeft, matrixBottom + 19);
+  ctx.textAlign = "right"; ctx.fillText("later depth  →", matrixRight, matrixBottom + 19);
+
+  // Inspector: selected layer metrics plus its strongest projected components.
+  const selected = rows[selectedIndex], previous = selectedIndex > 0 ? rows[selectedIndex - 1] : null;
+  const selectedValues = residualDisplayValues(rows, selectedIndex);
+  const cosine = previous ? residualCosine(previous[2], selected[2]) : null;
+  const updateSize = updateSizes[selectedIndex];
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `9px ${MONO}`;
+  ctx.fillText(residualMode === "delta" ? "SELECTED TRANSITION" : "SELECTED LAYER", panelLeft, 126);
+  ctx.fillStyle = "rgba(255,255,255,.90)"; ctx.font = `500 20px Inter, sans-serif`;
+  const panelTitle = residualMode === "delta" && previous ? `L${previous[0]} → L${selected[0]}` : `Layer ${selected[0]}`;
+  ctx.fillText(panelTitle, panelLeft, 151);
+
+  const metricTop = 178, metricW = (panelRight - panelLeft) / 3;
+  const metrics = [
+    ["RMS", Number(selected[1]).toFixed(3)],
+    ["ALIGN", cosine == null ? "—" : cosine.toFixed(2)],
+    ["UPDATE", selectedIndex ? updateSize.toFixed(2) : "—"],
+  ];
+  metrics.forEach(([label, value], index) => {
+    const x = panelLeft + index * metricW;
+    ctx.fillStyle = "rgba(255,255,255,.24)"; ctx.font = `8px ${MONO}`; ctx.fillText(label, x, metricTop);
+    ctx.fillStyle = "rgba(255,255,255,.78)"; ctx.font = `500 15px ${MONO}`; ctx.fillText(value, x, metricTop + 22);
+  });
+  ctx.strokeStyle = "rgba(255,255,255,.08)"; ctx.beginPath();
+  ctx.moveTo(panelLeft, metricTop + 37); ctx.lineTo(panelRight, metricTop + 37); ctx.stroke();
+
+  const detailTop = metricTop + 68;
+  ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `9px ${MONO}`;
+  ctx.fillText(residualMode === "delta" ? "STRONGEST CHANGES" : "STRONGEST COMPONENTS", panelLeft, detailTop);
+  const ranked = selectedValues.map((value, feature) => ({ value, feature }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 12);
+  const maxAbs = Math.max(1, ...ranked.map(item => Math.abs(item.value)));
+  const barsTop = detailTop + 18, availableH = Math.max(150, matrixBottom - barsTop);
+  const barStep = Math.min(27, availableH / ranked.length);
+  const labelW = 32, valueW = 43;
+  const barLeft = panelLeft + labelW, barRight = panelRight - valueW;
+  const barCenter = (barLeft + barRight) / 2, half = Math.max(20, (barRight - barLeft) / 2 - 4);
+  ctx.strokeStyle = "rgba(255,255,255,.07)"; ctx.beginPath();
+  ctx.moveTo(barCenter + .5, barsTop - 3); ctx.lineTo(barCenter + .5, barsTop + ranked.length * barStep); ctx.stroke();
+  ranked.forEach((item, index) => {
+    const y = barsTop + index * barStep + barStep / 2;
+    const width = Math.abs(item.value) / maxAbs * half;
+    ctx.textBaseline = "middle"; ctx.font = `9px ${MONO}`;
+    ctx.textAlign = "left"; ctx.fillStyle = "rgba(255,255,255,.38)";
+    ctx.fillText(`F${String(item.feature + 1).padStart(2, "0")}`, panelLeft, y);
+    ctx.fillStyle = item.value < 0 ? "rgba(224,92,105,.82)" : "rgba(82,168,224,.82)";
+    ctx.fillRect(item.value < 0 ? barCenter - width : barCenter, y - 4, width, 8);
+    ctx.textAlign = "right"; ctx.fillStyle = "rgba(255,255,255,.42)";
+    const sigma = item.value / 127 * 3;
+    ctx.fillText(`${sigma >= 0 ? "+" : ""}${sigma.toFixed(2)}σ`, panelRight, y);
+  });
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "rgba(255,255,255,.19)"; ctx.font = `9px Inter, sans-serif`;
+  ctx.fillText("stable hash buckets · not semantic concepts", panelLeft, matrixBottom + 19);
 
   if (residualHover) {
-    const { layer, column, value, rms, y } = residualHover;
-    const x = RESID_X0 + column * cellW;
-    ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.lineWidth = 1;
-    ctx.strokeRect(x - .5, y - rowH / 2 - .5, Math.max(1.5, cellW), rowH + 1);
-    ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = `10px ${MONO}`;
-    ctx.textBaseline = "alphabetic";
-    const prefix = residualMode === "delta" ? "layer Δ" : "state";
-    ctx.fillText(`L${layer} · feature ${column + 1}/${bins} · ${prefix} ${(value / 127 * 3).toFixed(2)}σ · rms ${Number(rms).toFixed(4)}`,
-      RESID_X0, heatBottom + 25);
+    const h = residualHover;
+    if (h.feature != null) {
+      const x = matrixLeft + h.index * layerW, y = matrixTop + h.feature * featureH;
+      ctx.strokeStyle = "rgba(255,255,255,.92)"; ctx.lineWidth = 1;
+      ctx.strokeRect(x + 1.5, y - .5, layerW - 3, Math.max(1.5, featureH));
+    }
+    ctx.textAlign = "left"; ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = `10px ${MONO}`;
+    const hoverText = h.feature == null
+      ? `Layer ${h.layer} · RMS ${Number(h.rms).toFixed(4)} · update ${h.update.toFixed(3)}`
+      : `Layer ${h.layer} · feature F${String(h.feature + 1).padStart(2, "0")} · ${h.value >= 0 ? "+" : ""}${(h.value / 127 * 3).toFixed(2)}σ`;
+    ctx.fillText(hoverText, matrixLeft, matrixBottom + 39);
   }
-
-  // Selected-layer waveform: the vector's shape is easier to compare than a
-  // single heatmap row. State mode overlays the preceding layer in gray.
-  const selected = rows[selectedIndex], selectedValues = residualDisplayValues(rows, selectedIndex);
-  const previous = selectedIndex > 0 ? rows[selectedIndex - 1] : null;
-  const cosine = previous ? residualCosine(previous[2], selected[2]) : null;
-  ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = `500 11px Inter, sans-serif`;
-  const waveLabel = residualMode === "delta" && previous
-    ? `L${previous[0]} → L${selected[0]} transformation`
-    : `L${selected[0]} vector profile`;
-  ctx.fillText(waveLabel, RESID_X0, waveTop - 17);
-  ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `10px ${MONO}`;
-  const metrics = `rms ${Number(selected[1]).toFixed(4)}` + (cosine == null ? "" : ` · cosine from L${previous[0]} ${cosine.toFixed(3)}`);
-  ctx.fillText(metrics, RESID_X0 + ctx.measureText(waveLabel).width + 22, waveTop - 17);
-  const midY = (waveTop + waveBottom) / 2, amplitude = (waveBottom - waveTop) * .42;
-  ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(RESID_X0, midY + .5); ctx.lineTo(W - RESID_RIGHT, midY + .5); ctx.stroke();
-  if (previous && residualMode === "state") {
-    ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.beginPath();
-    previous[2].forEach((value, column) => {
-      const x = RESID_X0 + (column + .5) * cellW, y = midY - value / 127 * amplitude;
-      column ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    });
-    ctx.stroke();
-  }
-  selectedValues.forEach((value, column) => {
-    const scale = residualMode === "delta" ? 180 : 127;
-    const height = Math.max(-amplitude, Math.min(amplitude, value / scale * amplitude));
-    ctx.fillStyle = value < 0 ? "rgba(224,92,105,.78)" : "rgba(82,168,224,.78)";
-    ctx.fillRect(RESID_X0 + column * cellW, midY - Math.max(0, height), Math.max(1, cellW - .7), Math.abs(height));
-  });
 }
 
 /* ---------------- pointer: hover + inspect ---------------- */
@@ -845,20 +920,24 @@ canvas.addEventListener("pointermove", e => {
   if (viewMode === "vector") {
     const frame = residualFrame(), geometry = residualGeometry(frame);
     residualHover = null;
-    if (geometry.rows.length && e.offsetX >= RESID_X0 && e.offsetX < W - RESID_RIGHT) {
-      const column = Math.max(0, Math.min(geometry.bins - 1,
-        Math.floor((e.offsetX - RESID_X0) / geometry.cellW)));
-      let nearest = null, distance = Infinity;
-      for (let index = 0; index < geometry.rows.length; index++) {
-        const row = geometry.rows[index], y = geometry.yForIndex(index), delta = Math.abs(e.offsetY - y);
-        if (delta < distance) { distance = delta; nearest = { row, y, index }; }
-      }
-      if (nearest && distance < 18) residualHover = {
-        layer: nearest.row[0], rms: nearest.row[1],
-        value: residualDisplayValues(geometry.rows, nearest.index)[column], column, y: nearest.y,
+    const { rows, bins, matrixLeft, matrixRight, matrixTop, matrixBottom,
+      chartTop, updateBase, layerW, featureH } = geometry;
+    const overDepth = e.offsetX >= matrixLeft && e.offsetX < matrixRight &&
+      ((e.offsetY >= chartTop - 10 && e.offsetY <= updateBase + 8) ||
+       (e.offsetY >= matrixTop - 30 && e.offsetY < matrixBottom));
+    if (rows.length && overDepth) {
+      const index = Math.max(0, Math.min(rows.length - 1,
+        Math.floor((e.offsetX - matrixLeft) / layerW)));
+      const feature = e.offsetY >= matrixTop
+        ? Math.max(0, Math.min(bins - 1, Math.floor((e.offsetY - matrixTop) / featureH)))
+        : null;
+      const values = residualDisplayValues(rows, index);
+      residualHover = {
+        index, feature, layer: rows[index][0], rms: rows[index][1],
+        value: feature == null ? null : values[feature], update: residualUpdateSize(rows, index),
       };
     }
-    canvas.style.cursor = residualHover ? "crosshair" : "default";
+    canvas.style.cursor = residualHover ? "pointer" : "default";
     return;
   }
   field.hovered = hitTest(e.offsetX, e.offsetY);
@@ -884,12 +963,26 @@ document.querySelectorAll("#viewtoggle .v").forEach(el => el.addEventListener("c
   if (viewMode === "trace" && !traceWord && frames.length) traceWord = (computeWordStats()[0] || {}).word || null;
   if (viewMode !== "vector") residualHover = null;
   document.getElementById("vector-controls").classList.toggle("show", viewMode === "vector");
+  updateViewFoot();
 }));
 document.querySelectorAll("#vector-controls .rv").forEach(el => el.addEventListener("click", () => {
   residualMode = el.dataset.rv;
   residualHover = null;
   document.querySelectorAll("#vector-controls .rv").forEach(o => o.classList.toggle("on", o === el));
+  updateViewFoot();
 }));
+function updateViewFoot() {
+  const foot = document.getElementById("foot");
+  if (viewMode === "vector") {
+    foot.innerHTML = residualMode === "delta"
+      ? `<b style="color:#e05c69">coral −</b> / <b style="color:#52a8e0">blue +</b> · brighter = larger layer update · click a layer to inspect`
+      : `<b style="color:#e05c69">coral −</b> / <b style="color:#52a8e0">blue +</b> · brighter = larger normalized component · click a layer to inspect`;
+  } else if (viewMode === "trace") {
+    foot.innerHTML = `one word across layers × tokens · click a token column to pause there`;
+  } else {
+    foot.innerHTML = `thoughts sink toward speech · <b>size</b> = strength · <b style="color:var(--read)">amber</b> = while reading you · <b style="color:var(--think)">blue</b> = while replying`;
+  }
+}
 document.querySelector("#inspect .x").onclick = () => {
   field.selected = null; inspectEl.style.display = "none";
 };
