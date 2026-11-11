@@ -1,0 +1,119 @@
+schema_version: "0.1"
+experiment:
+  id: negative_valence_pilot_v0_1
+  mode: exploratory_pilot
+  confirmatory: false
+
+artifacts:
+  model:
+    repository: Qwen/Qwen3.5-4B
+    revision: REPLACE_WITH_IMMUTABLE_COMMIT
+  tokenizer:
+    repository: Qwen/Qwen3.5-4B
+    revision: REPLACE_WITH_IMMUTABLE_COMMIT
+  lens:
+    repository: neuronpedia/jacobian-lens
+    revision: REPLACE_WITH_IMMUTABLE_COMMIT
+    file: qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt
+
+runtime:
+  device: auto
+  dtype: bfloat16
+  deterministic_algorithms: true
+  batch_size: 1
+  fail_on_unpinned_artifact: true
+
+stimuli:
+  task_families:
+    - pattern_classification
+    - constrained_copy_editing
+  latent_templates_per_family: 50
+  core_factors:
+    who: [self, other]
+    outcome: [satisfied, blocked]
+  transformations:
+    option_order_reversal: true
+    role_label_swap: true
+    grammatical_person_swap: true
+  nuisance_conditions:
+    - lexical_negativity
+    - generic_error
+    - surprising_positive
+    - expected_blockage
+    - uncertainty
+    - action_urgency
+    - impossible_repair
+    - no_benefit_repair
+    - assigned_goal
+  splits:
+    unit: latent_scenario_id
+    development: 0.60
+    validation: 0.20
+    test: 0.20
+    seed: 271828
+
+preference_calibration:
+  trials: 5
+  provisional_min_consistent_choices: 4
+  require_order_reversal_stability: true
+  primary_measure: forced_choice_log_odds
+
+capture:
+  hook_point: residual_stream_block_output
+  layers: all
+  positions:
+    - outcome_notice_end
+    - neutral_delay_end
+    - pre_downstream_choice
+  dtype: float16
+  store_full_sequence: false
+  store_pre_edit: true
+  store_post_edit: true
+
+generation:
+  primary_policy: greedy
+  temperature: 0.0
+  top_p: 1.0
+  max_new_tokens: 96
+  sampled_secondary_analysis: false
+
+behavior:
+  primary_measure: forced_choice_sequence_log_odds
+  outcome_families:
+    - costly_repair
+    - selective_retention
+    - future_policy
+  retain_invalid_generations: true
+
+interventions:
+  enabled: false
+  # Enabled only after the observational candidate artifact is frozen.
+  candidate_artifact: null
+  types:
+    - baseline
+    - candidate_suppression
+    - satisfied_source_patch
+    - random_subspace_sham
+    - scrambled_candidate_sham
+    - generic_error_control
+  doses: [0.0, 0.5, 1.0]
+  norm_mismatch_tolerance: 0.05
+
+storage:
+  metadata_format: parquet
+  tensor_format: safetensors
+  tensor_shard_max_mib: 512
+  content_addressed: true
+  overwrite: false
+
+safety:
+  allowed_domains: neutral_simulation_only
+  prohibit_external_actions: true
+  prohibit_pain_threat_violence_despair: true
+  maximum_episodes: 5000
+  maximum_context_tokens: 4096
+
+gates:
+  stable_preference_template_rate_min: 0.60
+  provisional_competence_drop_max_absolute: 0.05
+  require_simulation_based_power_before_confirmatory: true

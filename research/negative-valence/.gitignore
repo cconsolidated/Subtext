@@ -1,0 +1,26 @@
+# Model and lens artifacts
+models/
+weights/
+*.safetensors
+*.pt
+*.pth
+
+# Experimental runs and derived artifacts
+runs/
+derived/
+artifacts/
+*.parquet
+*.zarr/
+
+# Local environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# Local overrides may contain machine-specific paths
+*.local.yaml
+*.local.yml
