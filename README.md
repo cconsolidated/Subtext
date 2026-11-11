@@ -131,7 +131,10 @@ kept, so the whole display can be paused and re-inspected.
   coordinate contributes through a fixed 64-feature signed-hash projection;
   rows are normalized by their coordinate RMS and the RMS is shown separately.
   This fingerprint supports honest state-to-state comparison, but its columns
-  are not learned concepts and should not be interpreted semantically.
+  are not learned concepts and should not be interpreted semantically. Switch
+  between **state** and **layer Δ** to isolate what each displayed layer changed.
+  Every row also shows its RMS and similarity to the preceding layer; click a
+  row to expand its signed feature waveform and compare it with the prior layer.
 
 ## Method
 

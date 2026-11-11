@@ -83,6 +83,14 @@
                    cursor: pointer; transition: color .15s, background .15s; }
   #viewtoggle .v:hover { color: var(--dim); }
   #viewtoggle .v.on { color: var(--ink); background: rgba(255,255,255,.08); }
+  #vector-controls { position: absolute; top: 14px; left: 180px; z-index: 5; display: none;
+                     gap: 2px; background: rgba(11,11,14,.7); border: 1px solid var(--hair);
+                     border-radius: 8px; padding: 2px; backdrop-filter: blur(12px); user-select: none; }
+  #vector-controls.show { display: flex; }
+  #vector-controls .rv { font-size: 10px; color: var(--faint); padding: 3px 10px;
+                         border-radius: 6px; cursor: pointer; transition: color .15s, background .15s; }
+  #vector-controls .rv:hover { color: var(--dim); }
+  #vector-controls .rv.on { color: var(--ink); background: rgba(255,255,255,.08); }
 
   /* tabs on the ledger panel */
   .cap.tabs { display: flex; gap: 14px; padding-bottom: 6px; }
@@ -240,6 +248,10 @@
       <span class="v on" data-v="cloud" title="live thought cloud">cloud</span>
       <span class="v" data-v="trace" title="one word's strength across layers × tokens">trace</span>
       <span class="v" data-v="vector" title="signed residual fingerprint by layer">vector</span>
+    </div>
+    <div id="vector-controls" aria-label="vector display mode">
+      <span class="rv on" data-rv="state" title="normalized residual state at each layer">state</span>
+      <span class="rv" data-rv="delta" title="change from the preceding displayed layer">layer Δ</span>
     </div>
     <div id="inspect">
       <span class="x">✕</span>
@@ -444,6 +456,8 @@ const MAX_VISIBLE = 10;
 let viewMode = "cloud";       // "cloud" | "trace" | "vector"
 let traceWord = null;         // the word the trace view follows
 let residualHover = null;
+let residualMode = "state";   // "state" | "delta"
+let residualSelectedLayer = null;
 const field = {
   thoughts: new Map(), pulses: [],
   dominant: { word: null, run: 0 }, lastCalligram: new Map(),
@@ -674,48 +688,98 @@ function renderTrace() {
    keeping each frame compact. Each row is a model layer; columns are stable
    projected features. Values are normalized by that layer's coordinate RMS,
    clipped to ±3 z-like units, and quantized to signed int8 on the server. */
-const RESID_X0 = 60, RESID_RIGHT = 76;
+const RESID_X0 = 72, RESID_RIGHT = 150;
 function residualFrame() { return cursor >= 0 ? frames[cursor] : null; }
 function residualGeometry(frame) {
   const rows = (frame && frame.resid) || [];
   const bins = rows.length ? rows[0][2].length : 64;
-  return { rows, bins, cellW: (W - RESID_X0 - RESID_RIGHT) / Math.max(1, bins) };
+  const heatTop = 102, waveBottom = H * .86;
+  const waveHeight = Math.max(72, Math.min(130, H * .20));
+  const waveTop = waveBottom - waveHeight;
+  const heatBottom = Math.max(heatTop + 80, waveTop - 48);
+  const yForIndex = index => rows.length < 2 ? heatTop
+    : heatTop + index * (heatBottom - heatTop) / (rows.length - 1);
+  return {
+    rows, bins, heatTop, heatBottom, waveTop, waveBottom, yForIndex,
+    cellW: (W - RESID_X0 - RESID_RIGHT) / Math.max(1, bins),
+  };
+}
+function residualCosine(a, b) {
+  let dot = 0, aa = 0, bb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; aa += a[i] ** 2; bb += b[i] ** 2; }
+  return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
+}
+function residualDisplayValues(rows, index) {
+  const values = rows[index][2];
+  if (residualMode !== "delta") return values;
+  if (index === 0) return values.map(() => 0);
+  return values.map((value, column) => value - rows[index - 1][2][column]);
 }
 function renderResidual() {
   ctx.clearRect(0, 0, W, H);
   const frame = residualFrame();
-  const { rows, bins, cellW } = residualGeometry(frame);
-  const topY = RAILS.length ? railY(RAILS[0].frac) : 55;
-  const botY = RAILS.length ? railY(RAILS[RAILS.length - 1].frac) : H - 55;
+  const geometry = residualGeometry(frame);
+  const { rows, bins, cellW, heatTop, heatBottom, waveTop, waveBottom, yForIndex } = geometry;
 
   ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
   ctx.fillStyle = "rgba(255,255,255,.84)"; ctx.font = `500 16px Inter, sans-serif`;
-  ctx.fillText("residual fingerprint", RESID_X0, topY - 31);
+  ctx.fillText("residual stream across layers", RESID_X0, heatTop - 52);
   ctx.fillStyle = "rgba(255,255,255,.34)"; ctx.font = `10px ${MONO}`;
-  ctx.fillText(`${bins} signed hash features · normalized by layer RMS · red − / blue +`, RESID_X0, topY - 15);
+  const subtitle = residualMode === "delta"
+    ? `${bins} features · change from previous displayed layer · red − / blue +`
+    : `${bins} signed hash features · normalized by layer RMS · red − / blue +`;
+  ctx.fillText(subtitle, RESID_X0, heatTop - 35);
 
   if (!rows.length) {
     ctx.fillStyle = "rgba(255,255,255,.3)"; ctx.font = `13px Inter, sans-serif`;
     ctx.fillText(frames.length ? "this replay has no residual fingerprint data"
-                               : "send a message, then switch to vector", RESID_X0, (topY + botY) / 2);
+                               : "send a message, then switch to vector", RESID_X0, (heatTop + heatBottom) / 2);
     return;
   }
 
-  const rowH = Math.max(8, Math.min(18, (botY - topY) / Math.max(1, rows.length) * .58));
-  for (const [layer, rms, values] of rows) {
-    const y = railY(layer / (nLayersG - 1));
-    ctx.fillStyle = "rgba(255,255,255,.22)"; ctx.font = `10px ${MONO}`;
+  if (residualSelectedLayer == null || !rows.some(row => row[0] === residualSelectedLayer))
+    residualSelectedLayer = rows[rows.length - 1][0];
+  const selectedIndex = Math.max(0, rows.findIndex(row => row[0] === residualSelectedLayer));
+  const rowH = Math.max(9, Math.min(20, (heatBottom - heatTop) / Math.max(1, rows.length - 1) * .55));
+  const maxRms = Math.max(...rows.map(row => Number(row[1])), 1e-9);
+
+  // A connected layer spine makes depth and the selected layer legible.
+  ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 1; ctx.beginPath();
+  rows.forEach((_row, index) => index ? ctx.lineTo(42, yForIndex(index)) : ctx.moveTo(42, yForIndex(index)));
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,.22)"; ctx.font = `9px ${MONO}`;
+  ctx.fillText("FEATURE 1", RESID_X0, heatTop - 13);
+  ctx.fillText(`FEATURE ${bins}`, W - RESID_RIGHT - 48, heatTop - 13);
+  ctx.fillText("RMS", W - RESID_RIGHT + 14, heatTop - 13);
+  ctx.fillText("COS↑", W - 54, heatTop - 13);
+
+  for (let index = 0; index < rows.length; index++) {
+    const [layer, rms] = rows[index], values = residualDisplayValues(rows, index), y = yForIndex(index);
+    if (index === selectedIndex) {
+      ctx.fillStyle = "rgba(255,255,255,.035)";
+      ctx.fillRect(12, y - rowH / 2 - 4, W - 24, rowH + 8);
+    }
+    ctx.fillStyle = index === selectedIndex ? "rgba(255,255,255,.78)" : "rgba(255,255,255,.30)";
+    ctx.font = `${index === selectedIndex ? "500" : "400"} 10px ${MONO}`;
     ctx.textBaseline = "middle"; ctx.fillText("L" + layer, 18, y);
-    ctx.fillStyle = "rgba(255,255,255,.22)";
-    ctx.fillText(`rms ${Number(rms).toFixed(3)}`, W - RESID_RIGHT + 8, y);
+    ctx.beginPath(); ctx.arc(42, y, index === selectedIndex ? 3.5 : 2, 0, 7); ctx.fill();
     for (let column = 0; column < values.length; column++) {
-      const value = values[column], magnitude = Math.abs(value) / 127;
+      const value = values[column], magnitude = Math.min(1, Math.abs(value) / (residualMode === "delta" ? 180 : 127));
       const rgb = value < 0 ? "224,92,105" : "82,168,224";
       ctx.fillStyle = magnitude < .015
         ? "rgba(255,255,255,.025)"
         : `rgba(${rgb},${(0.10 + 0.88 * magnitude).toFixed(3)})`;
       ctx.fillRect(RESID_X0 + column * cellW, y - rowH / 2, Math.max(1, cellW - .7), rowH);
     }
+    const rmsWidth = 44 * Number(rms) / maxRms;
+    ctx.fillStyle = "rgba(255,255,255,.08)"; ctx.fillRect(W - RESID_RIGHT + 14, y - 2, 44, 4);
+    ctx.fillStyle = "rgba(255,255,255,.48)"; ctx.fillRect(W - RESID_RIGHT + 14, y - 2, rmsWidth, 4);
+    ctx.fillStyle = "rgba(255,255,255,.34)"; ctx.font = `9px ${MONO}`;
+    ctx.fillText(Number(rms).toFixed(3), W - RESID_RIGHT + 62, y);
+    if (index > 0) {
+      const cosine = residualCosine(rows[index - 1][2], rows[index][2]);
+      ctx.fillText(cosine.toFixed(2), W - 54, y);
+    } else ctx.fillText("—", W - 54, y);
   }
 
   if (residualHover) {
@@ -725,9 +789,41 @@ function renderResidual() {
     ctx.strokeRect(x - .5, y - rowH / 2 - .5, Math.max(1.5, cellW), rowH + 1);
     ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = `10px ${MONO}`;
     ctx.textBaseline = "alphabetic";
-    ctx.fillText(`L${layer} · feature ${column + 1}/${bins} · ${(value / 127 * 3).toFixed(2)}σ · rms ${Number(rms).toFixed(4)}`,
-      RESID_X0, botY + 28);
+    const prefix = residualMode === "delta" ? "layer Δ" : "state";
+    ctx.fillText(`L${layer} · feature ${column + 1}/${bins} · ${prefix} ${(value / 127 * 3).toFixed(2)}σ · rms ${Number(rms).toFixed(4)}`,
+      RESID_X0, heatBottom + 25);
   }
+
+  // Selected-layer waveform: the vector's shape is easier to compare than a
+  // single heatmap row. State mode overlays the preceding layer in gray.
+  const selected = rows[selectedIndex], selectedValues = residualDisplayValues(rows, selectedIndex);
+  const previous = selectedIndex > 0 ? rows[selectedIndex - 1] : null;
+  const cosine = previous ? residualCosine(previous[2], selected[2]) : null;
+  ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = `500 11px Inter, sans-serif`;
+  const waveLabel = residualMode === "delta" && previous
+    ? `L${previous[0]} → L${selected[0]} transformation`
+    : `L${selected[0]} vector profile`;
+  ctx.fillText(waveLabel, RESID_X0, waveTop - 17);
+  ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `10px ${MONO}`;
+  const metrics = `rms ${Number(selected[1]).toFixed(4)}` + (cosine == null ? "" : ` · cosine from L${previous[0]} ${cosine.toFixed(3)}`);
+  ctx.fillText(metrics, RESID_X0 + ctx.measureText(waveLabel).width + 22, waveTop - 17);
+  const midY = (waveTop + waveBottom) / 2, amplitude = (waveBottom - waveTop) * .42;
+  ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(RESID_X0, midY + .5); ctx.lineTo(W - RESID_RIGHT, midY + .5); ctx.stroke();
+  if (previous && residualMode === "state") {
+    ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.beginPath();
+    previous[2].forEach((value, column) => {
+      const x = RESID_X0 + (column + .5) * cellW, y = midY - value / 127 * amplitude;
+      column ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  }
+  selectedValues.forEach((value, column) => {
+    const scale = residualMode === "delta" ? 180 : 127;
+    const height = Math.max(-amplitude, Math.min(amplitude, value / scale * amplitude));
+    ctx.fillStyle = value < 0 ? "rgba(224,92,105,.78)" : "rgba(82,168,224,.78)";
+    ctx.fillRect(RESID_X0 + column * cellW, midY - Math.max(0, height), Math.max(1, cellW - .7), Math.abs(height));
+  });
 }
 
 /* ---------------- pointer: hover + inspect ---------------- */
@@ -753,12 +849,13 @@ canvas.addEventListener("pointermove", e => {
       const column = Math.max(0, Math.min(geometry.bins - 1,
         Math.floor((e.offsetX - RESID_X0) / geometry.cellW)));
       let nearest = null, distance = Infinity;
-      for (const row of geometry.rows) {
-        const y = railY(row[0] / (nLayersG - 1)), delta = Math.abs(e.offsetY - y);
-        if (delta < distance) { distance = delta; nearest = { row, y }; }
+      for (let index = 0; index < geometry.rows.length; index++) {
+        const row = geometry.rows[index], y = geometry.yForIndex(index), delta = Math.abs(e.offsetY - y);
+        if (delta < distance) { distance = delta; nearest = { row, y, index }; }
       }
       if (nearest && distance < 18) residualHover = {
-        layer: nearest.row[0], rms: nearest.row[1], value: nearest.row[2][column], column, y: nearest.y,
+        layer: nearest.row[0], rms: nearest.row[1],
+        value: residualDisplayValues(geometry.rows, nearest.index)[column], column, y: nearest.y,
       };
     }
     canvas.style.cursor = residualHover ? "crosshair" : "default";
@@ -768,7 +865,10 @@ canvas.addEventListener("pointermove", e => {
   canvas.style.cursor = field.hovered ? "pointer" : "default";
 });
 canvas.addEventListener("click", e => {
-  if (viewMode === "vector") return;
+  if (viewMode === "vector") {
+    if (residualHover) residualSelectedLayer = residualHover.layer;
+    return;
+  }
   if (viewMode === "trace") {
     if (!frames.length) return;
     const i = Math.round((e.offsetX - TRACE_X0 - traceColW() / 2) / traceColW());
@@ -783,6 +883,12 @@ document.querySelectorAll("#viewtoggle .v").forEach(el => el.addEventListener("c
   document.querySelectorAll("#viewtoggle .v").forEach(o => o.classList.toggle("on", o === el));
   if (viewMode === "trace" && !traceWord && frames.length) traceWord = (computeWordStats()[0] || {}).word || null;
   if (viewMode !== "vector") residualHover = null;
+  document.getElementById("vector-controls").classList.toggle("show", viewMode === "vector");
+}));
+document.querySelectorAll("#vector-controls .rv").forEach(el => el.addEventListener("click", () => {
+  residualMode = el.dataset.rv;
+  residualHover = null;
+  document.querySelectorAll("#vector-controls .rv").forEach(o => o.classList.toggle("on", o === el));
 }));
 document.querySelector("#inspect .x").onclick = () => {
   field.selected = null; inspectEl.style.display = "none";
@@ -974,7 +1080,7 @@ function resetViz() {
   field.dominant = { word: null, run: 0 };
   field.selected = null; field.hovered = null; inspectEl.style.display = "none";
   ledger.innerHTML = ""; tmRows.innerHTML = ""; words.innerHTML = ""; traceWord = null;
-  residualHover = null;
+  residualHover = null; residualSelectedLayer = null;
   stat("s-read", 0); stat("s-said", 0); stat("s-thoughts", 0); stat("s-tps", "–");
   tScrub.max = 0; tScrub.value = 0; tRead.textContent = "tok 0 / 0";
   setPlayIcon(); setLiveState();
