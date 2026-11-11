@@ -7,13 +7,13 @@ experiment:
 artifacts:
   model:
     repository: Qwen/Qwen3.5-4B
-    revision: REPLACE_WITH_IMMUTABLE_COMMIT
+    revision: 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
   tokenizer:
     repository: Qwen/Qwen3.5-4B
-    revision: REPLACE_WITH_IMMUTABLE_COMMIT
+    revision: 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
   lens:
     repository: neuronpedia/jacobian-lens
-    revision: REPLACE_WITH_IMMUTABLE_COMMIT
+    revision: 16a01f309fcec900fdcec3f4cd5b64f3d00e4d5a
     file: qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt
 
 runtime:

@@ -1,0 +1,36 @@
+schema_version = "0.1"
+experiment_id = "subtext_viewer"
+
+[artifacts.model]
+repository = "Qwen/Qwen3.5-4B"
+revision = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+
+[artifacts.tokenizer]
+repository = "Qwen/Qwen3.5-4B"
+revision = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+
+[artifacts.lens]
+repository = "neuronpedia/jacobian-lens"
+revision = "16a01f309fcec900fdcec3f4cd5b64f3d00e4d5a"
+file = "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
+
+[runtime]
+device = "auto"
+dtype = "auto"
+deterministic_algorithms = false
+batch_size = 1
+fail_on_unpinned_artifact = true
+
+[capture]
+hook_point = "residual_stream_block_output"
+layers = "all"
+positions = ["current_token"]
+dtype = "float16"
+store_full_sequence = false
+
+[viewer]
+port = 8765
+top_k_per_layer = 8
+max_words_per_frame = 14
+layer_fractions = [0.12, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.93]
+token_mask_file = "token_mask.pt"

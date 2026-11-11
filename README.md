@@ -178,11 +178,27 @@ python server.py
 # → http://localhost:8765
 ```
 
+Runtime and artifact settings now live in `config/server.default.toml`. Model,
+tokenizer, lens, and `jlens` revisions are pinned to immutable commits, and the
+server loads them only when `initialize_runtime()` is called. To use another
+validated configuration:
+
+```bash
+python server.py --config path/to/config.toml
+```
+
+The research foundation is dependency-light and can be tested without a GPU or
+model download:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 On Windows, run `python -u -X utf8 server.py`, or use `start.bat`.
 
 **Other models.** The server is configured for Qwen3.5-4B because Neuronpedia
 publishes a pre-fitted lens for it (a 27B lens is also published, for larger
-GPUs — edit `MODEL_NAME`/`LENS_FILE` in `server.py`). Any HuggingFace decoder
+GPUs — copy and edit `config/server.default.toml`). Any HuggingFace decoder
 can be used by fitting your own lens with `jlens.fit()`; ~100 prompts produces
 a usable lens, and fitting a 4B-scale model takes on the order of an hour on a
 single consumer GPU. See the [reference repo](https://github.com/anthropics/jacobian-lens)

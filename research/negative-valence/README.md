@@ -32,9 +32,9 @@ psychological continuity across model executions.
 | Protocol revision | Drafted |
 | Technical specification | Drafted |
 | Pilot configuration | Schema-valid draft |
-| Model and lens revisions | Not frozen |
+| Model and lens revisions | Pinned to immutable commits |
 | Stimulus templates | Not created |
-| Harness M0 | Not implemented |
+| Harness M0 | Foundation implemented; full-model equivalence run pending |
 | Pilot execution | Not started |
 | Empirical results | None |
 
