@@ -132,7 +132,14 @@ kept, so the whole display can be paused and re-inspected.
   rows are normalized by their coordinate RMS and the RMS is shown separately.
   This fingerprint supports honest state-to-state comparison, but its columns
   are not learned concepts and should not be interpreted semantically. Switch
-  between **state** and **layer Δ** to isolate what each displayed layer changed.
+  between **state** and **change** to isolate what each displayed layer changed.
+  Change fingerprints are formed from the residual delta before normalization,
+  so they represent genuine projected update directions rather than differences
+  between two normalized states. **Trajectory** accumulates unit-normalized
+  updates and projects that direction path into a shared two-dimensional PCA
+  plane. Arrow angle shows the direction retained in that plane, while stroke
+  width preserves the full update RMS; the inspector reports the plane's
+  explained variance.
   Depth runs left-to-right over a feature-by-layer matrix, with an overview of
   vector magnitude and update size above it. Click a layer to inspect its RMS,
   similarity to the preceding layer, update size, and strongest projected
@@ -146,6 +153,7 @@ browser (single HTML file)  ⇐ websocket ⇐  server.py
     pre-fitted Jacobian lens: neuronpedia/jacobian-lens, revision qwen-n1000
     per token: residual hooks at 9 layers → J_l transport → unembed
              → full-vocabulary softmax → word-start top-k → frame
+             → pre-normalization residual deltas → direction trajectory
 ```
 
 Each exchange has two phases. A single prefill pass covers the user's message,

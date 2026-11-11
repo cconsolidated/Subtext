@@ -24,6 +24,7 @@ from subtext.residuals import (
     DEFAULT_CLIP_Z,
     DEFAULT_FINGERPRINT_BINS,
     build_projection,
+    quantized_delta_fingerprint,
     quantized_fingerprint,
 )
 
@@ -207,6 +208,28 @@ def residual_fingerprint(residuals: dict[int, Any], position: int) -> list[list[
     return fingerprint
 
 
+def residual_directions(residuals: dict[int, Any], position: int) -> list[list[Any]]:
+    """Return projected residual updates before any per-layer normalization.
+
+    Each row represents the net update between two sampled hook points.  The
+    delta itself is formed first, then projected and normalized, so its signed
+    fingerprint describes an actual update direction rather than the
+    difference between two independently normalized states.
+    """
+
+    runtime = require_runtime()
+    directions: list[list[Any]] = []
+    for source, target in zip(runtime.viz_layers, runtime.viz_layers[1:]):
+        rms, values = quantized_delta_fingerprint(
+            residuals[source][0, position],
+            residuals[target][0, position],
+            runtime.residual_projection,
+            clip_z=DEFAULT_CLIP_Z,
+        )
+        directions.append([source, target, rms, values])
+    return directions
+
+
 def _template_ids(messages: list[dict[str, Any]], add_generation: bool) -> Any:
     runtime = require_runtime()
     output = runtime.bundle.tokenizer.apply_chat_template(
@@ -258,6 +281,7 @@ async def ws_chat(websocket: WebSocket):
                     "bins": DEFAULT_FINGERPRINT_BINS,
                     "clip_z": DEFAULT_CLIP_Z,
                     "normalization": "per-layer coordinate RMS",
+                    "directions": "pre-normalization residual deltas",
                 },
             }
         )
@@ -286,6 +310,7 @@ async def ws_chat(websocket: WebSocket):
                         "tok": token_text,
                         "thoughts": readout(residuals, position),
                         "resid": residual_fingerprint(residuals, position),
+                        "resid_delta": residual_directions(residuals, position),
                     }
                     await websocket.send_text(json.dumps(frame))
                     await asyncio.sleep(0)
@@ -321,6 +346,7 @@ async def ws_chat(websocket: WebSocket):
                         "out": bundle.tokenizer.decode([next_token]),
                         "thoughts": readout(catcher.acts, -1),
                         "resid": residual_fingerprint(catcher.acts, -1),
+                        "resid_delta": residual_directions(catcher.acts, -1),
                     }
                     await websocket.send_text(json.dumps(frame))
                     await asyncio.sleep(0)

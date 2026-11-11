@@ -98,3 +98,19 @@ def quantized_fingerprint(
     )
     quantized = [int(value) for value in rounded]
     return round(float(rms.item()), 6), quantized
+
+
+def quantized_delta_fingerprint(
+    source: Any,
+    target: Any,
+    projection: Any,
+    *,
+    clip_z: float = DEFAULT_CLIP_Z,
+) -> tuple[float, list[int]]:
+    """Project an update formed before normalization and quantization."""
+
+    return quantized_fingerprint(
+        target.float() - source.float(),
+        projection,
+        clip_z=clip_z,
+    )

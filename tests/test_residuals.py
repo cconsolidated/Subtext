@@ -1,6 +1,8 @@
 import unittest
 
-from subtext.residuals import projection_spec
+import torch
+
+from subtext.residuals import projection_spec, quantized_delta_fingerprint
 
 
 class ResidualProjectionTests(unittest.TestCase):
@@ -25,6 +27,20 @@ class ResidualProjectionTests(unittest.TestCase):
         buckets, _signs, scales = projection_spec(16, 16)
         self.assertEqual(buckets, tuple(range(16)))
         self.assertTrue(all(scale == 1.0 for scale in scales))
+
+    def test_delta_is_formed_before_normalization(self):
+        delta = torch.tensor([1.0, -1.0, 2.0, -2.0])
+        projection = torch.eye(4)
+        from_origin = quantized_delta_fingerprint(
+            torch.zeros(4), delta, projection
+        )
+        shifted = quantized_delta_fingerprint(
+            torch.full((4,), 1000.0),
+            torch.full((4,), 1000.0) + delta,
+            projection,
+        )
+        self.assertEqual(from_origin, shifted)
+        self.assertAlmostEqual(from_origin[0], (2.5) ** 0.5, places=6)
 
 
 if __name__ == "__main__":

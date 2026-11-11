@@ -252,6 +252,7 @@
     <div id="vector-controls" aria-label="vector display mode">
       <span class="rv on" data-rv="state" title="normalized residual state at each layer">state</span>
       <span class="rv" data-rv="delta" title="change from the preceding displayed layer">change</span>
+      <span class="rv" data-rv="trajectory" title="projected update directions through depth">trajectory</span>
     </div>
     <div id="inspect">
       <span class="x">✕</span>
@@ -456,7 +457,7 @@ const MAX_VISIBLE = 10;
 let viewMode = "cloud";       // "cloud" | "trace" | "vector"
 let traceWord = null;         // the word the trace view follows
 let residualHover = null;
-let residualMode = "state";   // "state" | "delta"
+let residualMode = "state";   // "state" | "delta" | "trajectory"
 let residualSelectedLayer = null;
 const field = {
   thoughts: new Map(), pulses: [],
@@ -711,24 +712,231 @@ function residualCosine(a, b) {
   for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; aa += a[i] ** 2; bb += b[i] ** 2; }
   return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
 }
-function residualUpdateSize(rows, index) {
-  if (index < 1) return 0;
+function residualTransition(frame, rows, index) {
+  if (index < 1) return null;
+  const source = rows[index - 1][0], target = rows[index][0];
+  const exact = ((frame && frame.resid_delta) || []).find(row => row[0] === source && row[1] === target);
+  if (exact) return { source, target, rms: Number(exact[2]), values: exact[3], exact: true };
+  const values = rows[index][2].map((value, feature) => value - rows[index - 1][2][feature]);
   let sum = 0;
-  for (let i = 0; i < rows[index][2].length; i++) {
-    const delta = rows[index][2][i] - rows[index - 1][2][i];
-    sum += delta * delta;
-  }
-  return Math.sqrt(sum / rows[index][2].length) / 127;
+  values.forEach(value => { sum += value * value; });
+  return { source, target, rms: Math.sqrt(sum / values.length) / 127, values, exact: false };
 }
-function residualDisplayValues(rows, index) {
+function residualUpdateSize(frame, rows, index) {
+  if (index < 1) return 0;
+  return residualTransition(frame, rows, index).rms;
+}
+function residualDisplayValues(frame, rows, index) {
   const values = rows[index][2];
   if (residualMode !== "delta") return values;
   if (index === 0) return values.map(() => 0);
-  return values.map((value, column) => value - rows[index - 1][2][column]);
+  return residualTransition(frame, rows, index).values;
+}
+const residualTrajectoryCache = new WeakMap();
+function residualDot(a, b) {
+  let total = 0;
+  for (let i = 0; i < a.length; i++) total += a[i] * b[i];
+  return total;
+}
+function residualUnit(vector) {
+  const norm = Math.sqrt(residualDot(vector, vector));
+  return norm > 1e-12 ? vector.map(value => value / norm) : vector.map(() => 0);
+}
+function residualPca2(points) {
+  const count = points.length, dimensions = points[0].length;
+  const mean = Array(dimensions).fill(0);
+  points.forEach(point => point.forEach((value, i) => { mean[i] += value / count; }));
+  const centered = points.map(point => point.map((value, i) => value - mean[i]));
+  const multiply = vector => {
+    const out = Array(dimensions).fill(0);
+    centered.forEach(point => {
+      const weight = residualDot(point, vector);
+      for (let i = 0; i < dimensions; i++) out[i] += point[i] * weight;
+    });
+    return out;
+  };
+  const power = (offset, exclude = null) => {
+    let vector = residualUnit(Array.from({ length: dimensions }, (_v, i) =>
+      Math.sin((i + 1) * (offset + 1.37)) + Math.cos((i + 1) * (offset + .61))));
+    for (let iteration = 0; iteration < 48; iteration++) {
+      let next = multiply(vector);
+      if (exclude) {
+        const overlap = residualDot(next, exclude);
+        next = next.map((value, i) => value - overlap * exclude[i]);
+      }
+      const normalized = residualUnit(next);
+      if (!normalized.some(value => Math.abs(value) > 1e-9)) break;
+      vector = normalized;
+    }
+    return vector;
+  };
+  const pc1 = power(.4), pc2 = power(1.9, pc1);
+  const eigen1 = residualDot(pc1, multiply(pc1));
+  const eigen2 = residualDot(pc2, multiply(pc2));
+  const total = centered.reduce((sum, point) => sum + residualDot(point, point), 0) || 1;
+  return {
+    coords: centered.map(point => [residualDot(point, pc1), residualDot(point, pc2)]),
+    explained: [Math.max(0, eigen1 / total), Math.max(0, eigen2 / total)],
+  };
+}
+function residualTrajectoryModel(frame) {
+  if (!frame || !frame.resid || frame.resid.length < 2) return null;
+  if (residualTrajectoryCache.has(frame)) return residualTrajectoryCache.get(frame);
+  const rows = frame.resid, dimensions = rows[0][2].length;
+  const points = [Array(dimensions).fill(0)], transitions = [];
+  for (let index = 1; index < rows.length; index++) {
+    const transition = residualTransition(frame, rows, index);
+    const vector = transition.values.map(value => value * (3 / 127) * transition.rms);
+    const direction = residualUnit(vector);
+    transitions.push({ ...transition, vector, direction });
+    points.push(points[index - 1].map((value, feature) => value + direction[feature]));
+  }
+  const pca = residualPca2(points);
+  const model = {
+    rows, points, transitions, coords: pca.coords, explained: pca.explained,
+    exact: transitions.every(transition => transition.exact),
+  };
+  residualTrajectoryCache.set(frame, model);
+  return model;
+}
+function residualTrajectoryScene(frame) {
+  const model = residualTrajectoryModel(frame);
+  if (!model) return null;
+  const plotLeft = 82, panelGap = 38;
+  const panelWidth = Math.max(245, Math.min(320, W * .26));
+  const plotRight = W - panelWidth - panelGap - 20;
+  const plotTop = 126, plotBottom = H - 102;
+  const xs = model.coords.map(point => point[0]), ys = model.coords.map(point => point[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
+  const rangeX = Math.max(maxX - minX, 1e-9), rangeY = Math.max(maxY - minY, 1e-9);
+  const scale = .78 * Math.min((plotRight - plotLeft) / rangeX, (plotBottom - plotTop) / rangeY);
+  const screenCenterX = (plotLeft + plotRight) / 2, screenCenterY = (plotTop + plotBottom) / 2;
+  const screen = model.coords.map(([x, y]) => [
+    screenCenterX + (x - centerX) * scale,
+    screenCenterY - (y - centerY) * scale,
+  ]);
+  const origin = [screenCenterX - centerX * scale, screenCenterY + centerY * scale];
+  return {
+    ...model, screen, origin, plotLeft, plotRight, plotTop, plotBottom,
+    panelLeft: plotRight + panelGap, panelRight: W - 20,
+  };
+}
+function residualArrow(x1, y1, x2, y2, width, selected) {
+  const dx = x2 - x1, dy = y2 - y1, length = Math.hypot(dx, dy);
+  if (length < 2) return;
+  const ux = dx / length, uy = dy / length;
+  const color = selected ? "rgba(255,255,255,.92)" : "rgba(100,178,221,.56)";
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  const head = Math.min(11, Math.max(6, length * .18)), wing = head * .48;
+  ctx.beginPath(); ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - ux * head - uy * wing, y2 - uy * head + ux * wing);
+  ctx.lineTo(x2 - ux * head + uy * wing, y2 - uy * head - ux * wing);
+  ctx.closePath(); ctx.fill();
+}
+function renderResidualTrajectory(frame) {
+  ctx.clearRect(0, 0, W, H);
+  const scene = residualTrajectoryScene(frame);
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "rgba(255,255,255,.88)"; ctx.font = `500 19px Inter, sans-serif`;
+  ctx.fillText("Direction trajectory", 82, 74);
+  ctx.fillStyle = "rgba(255,255,255,.38)"; ctx.font = `11px Inter, sans-serif`;
+  ctx.fillText("Unit update directions projected into one shared PCA plane", 82, 94);
+  if (!scene) {
+    ctx.fillStyle = "rgba(255,255,255,.3)"; ctx.font = `13px Inter, sans-serif`;
+    ctx.fillText("send a message to trace update directions", 82, H / 2);
+    return;
+  }
+  const { rows, transitions, screen, explained, plotLeft, plotRight, plotTop, plotBottom,
+    panelLeft, panelRight, origin } = scene;
+  if (residualSelectedLayer == null || !rows.some(row => row[0] === residualSelectedLayer) || residualSelectedLayer === rows[0][0])
+    residualSelectedLayer = rows[rows.length - 1][0];
+  const selectedIndex = Math.max(1, rows.findIndex(row => row[0] === residualSelectedLayer));
+  const maxRms = Math.max(...transitions.map(transition => transition.rms), 1e-9);
+
+  // Equal-scale PCA axes keep arrow angles geometrically meaningful in-plane.
+  ctx.strokeStyle = "rgba(255,255,255,.055)"; ctx.lineWidth = 1;
+  ctx.strokeRect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop);
+  ctx.setLineDash([3, 6]);
+  ctx.beginPath(); ctx.moveTo(plotLeft, origin[1]); ctx.lineTo(plotRight, origin[1]); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(origin[0], plotTop); ctx.lineTo(origin[0], plotBottom); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,.24)"; ctx.font = `9px ${MONO}`;
+  ctx.fillText(`PC1  ${(explained[0] * 100).toFixed(0)}%`, plotRight - 66, origin[1] - 8);
+  ctx.save(); ctx.translate(origin[0] + 10, plotTop + 55); ctx.rotate(-Math.PI / 2);
+  ctx.fillText(`PC2  ${(explained[1] * 100).toFixed(0)}%`, 0, 0); ctx.restore();
+
+  transitions.forEach((transition, index) => {
+    const [x1, y1] = screen[index], [x2, y2] = screen[index + 1];
+    const selected = index + 1 === selectedIndex;
+    residualArrow(x1, y1, x2, y2, 1.2 + 3.2 * transition.rms / maxRms, selected);
+  });
+  screen.forEach(([x, y], index) => {
+    const selected = index === selectedIndex;
+    ctx.fillStyle = selected ? "rgba(255,255,255,.95)" : "rgba(12,14,17,.96)";
+    ctx.strokeStyle = selected ? "rgba(255,255,255,.95)" : "rgba(126,194,230,.72)";
+    ctx.lineWidth = selected ? 2 : 1.2; ctx.beginPath(); ctx.arc(x, y, selected ? 6 : 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = selected ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.48)";
+    ctx.font = `${selected ? "600" : "400"} 10px ${MONO}`; ctx.textAlign = "center";
+    ctx.fillText(`L${rows[index][0]}`, x, y - 11);
+  });
+  ctx.textAlign = "left"; ctx.fillStyle = "rgba(255,255,255,.22)"; ctx.font = `9px Inter, sans-serif`;
+  ctx.fillText("arrow angle = unit direction retained in the PCA plane", plotLeft, plotBottom + 22);
+  ctx.textAlign = "right"; ctx.fillText("stroke width = full update RMS", plotRight, plotBottom + 22);
+
+  const transition = transitions[selectedIndex - 1];
+  const previous = selectedIndex > 1 ? transitions[selectedIndex - 2] : null;
+  const turnCosine = previous ? Math.max(-1, Math.min(1, residualDot(previous.direction, transition.direction))) : null;
+  const turn = turnCosine == null ? null : Math.acos(turnCosine) * 180 / Math.PI;
+  const planeShare = explained[0] + explained[1];
+  ctx.textAlign = "left"; ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `9px ${MONO}`;
+  ctx.fillText("SELECTED UPDATE", panelLeft, 126);
+  ctx.fillStyle = "rgba(255,255,255,.90)"; ctx.font = `500 20px Inter, sans-serif`;
+  ctx.fillText(`L${transition.source} → L${transition.target}`, panelLeft, 151);
+  const metricTop = 178, metricW = (panelRight - panelLeft) / 3;
+  [["Δ RMS", transition.rms.toFixed(3)], ["TURN", turn == null ? "—" : `${turn.toFixed(0)}°`], ["2D VAR", `${(planeShare * 100).toFixed(0)}%`]]
+    .forEach(([label, value], index) => {
+      const x = panelLeft + index * metricW;
+      ctx.fillStyle = "rgba(255,255,255,.24)"; ctx.font = `8px ${MONO}`; ctx.fillText(label, x, metricTop);
+      ctx.fillStyle = "rgba(255,255,255,.78)"; ctx.font = `500 15px ${MONO}`; ctx.fillText(value, x, metricTop + 22);
+    });
+  ctx.strokeStyle = "rgba(255,255,255,.08)"; ctx.beginPath();
+  ctx.moveTo(panelLeft, metricTop + 37); ctx.lineTo(panelRight, metricTop + 37); ctx.stroke();
+
+  const detailTop = metricTop + 68;
+  ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `9px ${MONO}`;
+  ctx.fillText("DIRECTION COMPONENTS", panelLeft, detailTop);
+  const ranked = transition.direction.map((value, feature) => ({ value, feature }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 12);
+  const maxAbs = Math.max(1e-9, ...ranked.map(item => Math.abs(item.value)));
+  const barsTop = detailTop + 18, availableH = Math.max(150, plotBottom - barsTop);
+  const barStep = Math.min(27, availableH / ranked.length);
+  const barLeft = panelLeft + 32, barRight = panelRight - 43;
+  const barCenter = (barLeft + barRight) / 2, half = Math.max(20, (barRight - barLeft) / 2 - 4);
+  ctx.strokeStyle = "rgba(255,255,255,.07)"; ctx.beginPath();
+  ctx.moveTo(barCenter + .5, barsTop - 3); ctx.lineTo(barCenter + .5, barsTop + ranked.length * barStep); ctx.stroke();
+  ranked.forEach((item, index) => {
+    const y = barsTop + index * barStep + barStep / 2, width = Math.abs(item.value) / maxAbs * half;
+    ctx.textBaseline = "middle"; ctx.font = `9px ${MONO}`; ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(255,255,255,.38)"; ctx.fillText(`F${String(item.feature + 1).padStart(2, "0")}`, panelLeft, y);
+    ctx.fillStyle = item.value < 0 ? "rgba(224,92,105,.82)" : "rgba(82,168,224,.82)";
+    ctx.fillRect(item.value < 0 ? barCenter - width : barCenter, y - 4, width, 8);
+    ctx.textAlign = "right"; ctx.fillStyle = "rgba(255,255,255,.42)";
+    ctx.fillText(`${item.value >= 0 ? "+" : ""}${item.value.toFixed(2)}`, panelRight, y);
+  });
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.fillStyle = "rgba(255,255,255,.19)"; ctx.font = `9px Inter, sans-serif`;
+  ctx.fillText(scene.exact ? "exact deltas · projected to 64 stable buckets" : "legacy replay · approximate deltas", panelLeft, plotBottom + 22);
+
+  if (residualHover && residualHover.trajectory) {
+    const [x, y] = screen[residualHover.index];
+    ctx.strokeStyle = "rgba(255,255,255,.62)"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.stroke();
+  }
 }
 function renderResidual() {
-  ctx.clearRect(0, 0, W, H);
   const frame = residualFrame();
+  if (residualMode === "trajectory") { renderResidualTrajectory(frame); return; }
+  ctx.clearRect(0, 0, W, H);
   const g = residualGeometry(frame);
   const { rows, bins, matrixLeft, matrixRight, matrixTop, matrixBottom, layerW, featureH,
     panelLeft, panelRight, chartTop, chartBottom, updateBase, xForIndex } = g;
@@ -753,7 +961,7 @@ function renderResidual() {
     residualSelectedLayer = rows[rows.length - 1][0];
   const selectedIndex = Math.max(0, rows.findIndex(row => row[0] === residualSelectedLayer));
   const maxRms = Math.max(...rows.map(row => Number(row[1])), 1e-9);
-  const updateSizes = rows.map((_row, index) => residualUpdateSize(rows, index));
+  const updateSizes = rows.map((_row, index) => residualUpdateSize(frame, rows, index));
   const maxUpdate = Math.max(...updateSizes, 1e-9);
 
   // Overview: magnitude is a line; the amount written by each layer is a bar.
@@ -797,7 +1005,7 @@ function renderResidual() {
     ctx.fillStyle = index === selectedIndex ? "rgba(255,255,255,.90)" : "rgba(255,255,255,.38)";
     ctx.font = `${index === selectedIndex ? "600" : "400"} 10px ${MONO}`;
     ctx.fillText("L" + row[0], x, matrixTop - 18);
-    const values = residualDisplayValues(rows, index);
+    const values = residualDisplayValues(frame, rows, index);
     for (let feature = 0; feature < bins; feature++) {
       const value = values[feature];
       const magnitude = Math.min(1, Math.abs(value) / (residualMode === "delta" ? 180 : 127));
@@ -833,9 +1041,15 @@ function renderResidual() {
 
   // Inspector: selected layer metrics plus its strongest projected components.
   const selected = rows[selectedIndex], previous = selectedIndex > 0 ? rows[selectedIndex - 1] : null;
-  const selectedValues = residualDisplayValues(rows, selectedIndex);
+  const selectedValues = residualDisplayValues(frame, rows, selectedIndex);
   const cosine = previous ? residualCosine(previous[2], selected[2]) : null;
   const updateSize = updateSizes[selectedIndex];
+  const selectedTransition = selectedIndex > 0 ? residualTransition(frame, rows, selectedIndex) : null;
+  const priorTransition = selectedIndex > 1 ? residualTransition(frame, rows, selectedIndex - 1) : null;
+  const turnCosine = selectedTransition && priorTransition
+    ? Math.max(-1, Math.min(1, residualCosine(priorTransition.values, selectedTransition.values)))
+    : null;
+  const turn = turnCosine == null ? null : Math.acos(turnCosine) * 180 / Math.PI;
   ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
   ctx.fillStyle = "rgba(255,255,255,.30)"; ctx.font = `9px ${MONO}`;
   ctx.fillText(residualMode === "delta" ? "SELECTED TRANSITION" : "SELECTED LAYER", panelLeft, 126);
@@ -844,7 +1058,11 @@ function renderResidual() {
   ctx.fillText(panelTitle, panelLeft, 151);
 
   const metricTop = 178, metricW = (panelRight - panelLeft) / 3;
-  const metrics = [
+  const metrics = residualMode === "delta" ? [
+    ["Δ RMS", selectedTransition ? selectedTransition.rms.toFixed(3) : "—"],
+    ["TURN", turn == null ? "—" : `${turn.toFixed(0)}°`],
+    ["STATE SIM", cosine == null ? "—" : cosine.toFixed(2)],
+  ] : [
     ["RMS", Number(selected[1]).toFixed(3)],
     ["ALIGN", cosine == null ? "—" : cosine.toFixed(2)],
     ["UPDATE", selectedIndex ? updateSize.toFixed(2) : "—"],
@@ -920,6 +1138,21 @@ canvas.addEventListener("pointermove", e => {
   if (viewMode === "vector") {
     const frame = residualFrame(), geometry = residualGeometry(frame);
     residualHover = null;
+    if (residualMode === "trajectory") {
+      const scene = residualTrajectoryScene(frame);
+      if (scene) {
+        let nearest = -1, distance = Infinity;
+        scene.screen.forEach(([x, y], index) => {
+          const candidate = Math.hypot(e.offsetX - x, e.offsetY - y);
+          if (candidate < distance) { nearest = index; distance = candidate; }
+        });
+        if (nearest >= 1 && distance < 18) residualHover = {
+          trajectory: true, index: nearest, layer: scene.rows[nearest][0],
+        };
+      }
+      canvas.style.cursor = residualHover ? "pointer" : "default";
+      return;
+    }
     const { rows, bins, matrixLeft, matrixRight, matrixTop, matrixBottom,
       chartTop, updateBase, layerW, featureH } = geometry;
     const overDepth = e.offsetX >= matrixLeft && e.offsetX < matrixRight &&
@@ -931,10 +1164,10 @@ canvas.addEventListener("pointermove", e => {
       const feature = e.offsetY >= matrixTop
         ? Math.max(0, Math.min(bins - 1, Math.floor((e.offsetY - matrixTop) / featureH)))
         : null;
-      const values = residualDisplayValues(rows, index);
+      const values = residualDisplayValues(frame, rows, index);
       residualHover = {
         index, feature, layer: rows[index][0], rms: rows[index][1],
-        value: feature == null ? null : values[feature], update: residualUpdateSize(rows, index),
+        value: feature == null ? null : values[feature], update: residualUpdateSize(frame, rows, index),
       };
     }
     canvas.style.cursor = residualHover ? "pointer" : "default";
@@ -974,9 +1207,11 @@ document.querySelectorAll("#vector-controls .rv").forEach(el => el.addEventListe
 function updateViewFoot() {
   const foot = document.getElementById("foot");
   if (viewMode === "vector") {
-    foot.innerHTML = residualMode === "delta"
-      ? `<b style="color:#e05c69">coral −</b> / <b style="color:#52a8e0">blue +</b> · brighter = larger layer update · click a layer to inspect`
-      : `<b style="color:#e05c69">coral −</b> / <b style="color:#52a8e0">blue +</b> · brighter = larger normalized component · click a layer to inspect`;
+    foot.innerHTML = residualMode === "trajectory"
+      ? `arrows accumulate unit update directions · angle = PCA-plane direction · width = full update magnitude`
+      : residualMode === "delta"
+        ? `<b style="color:#e05c69">coral −</b> / <b style="color:#52a8e0">blue +</b> · brighter = stronger update direction component · click a layer to inspect`
+        : `<b style="color:#e05c69">coral −</b> / <b style="color:#52a8e0">blue +</b> · brighter = larger normalized component · click a layer to inspect`;
   } else if (viewMode === "trace") {
     foot.innerHTML = `one word across layers × tokens · click a token column to pause there`;
   } else {
