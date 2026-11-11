@@ -75,7 +75,7 @@
   .lg-row:hover { background: rgba(255,255,255,.035); }
   .lg-row.cur { background: rgba(255,255,255,.09); }
 
-  /* view toggle (cloud / trace) */
+  /* view toggle (cloud / trace / vector) */
   #viewtoggle { position: absolute; top: 14px; left: 16px; z-index: 5; display: flex; gap: 2px;
                 background: rgba(11,11,14,.7); border: 1px solid var(--hair); border-radius: 8px;
                 padding: 2px; backdrop-filter: blur(12px); user-select: none; }
@@ -239,6 +239,7 @@
     <div id="viewtoggle">
       <span class="v on" data-v="cloud" title="live thought cloud">cloud</span>
       <span class="v" data-v="trace" title="one word's strength across layers × tokens">trace</span>
+      <span class="v" data-v="vector" title="signed residual fingerprint by layer">vector</span>
     </div>
     <div id="inspect">
       <span class="x">✕</span>
@@ -252,7 +253,7 @@
     <div id="foot">
       thoughts sink toward speech · <b>size</b> = strength ·
       <b style="color:var(--read)">amber</b> = while reading you ·
-      <b style="color:var(--think)">blue</b> = while replying · hover a word for its layer trace
+      <b style="color:var(--think)">blue</b> = while replying · vector: <b>red −</b> / <b>blue +</b>
     </div>
     <div id="transport" class="hidden">
       <button id="t-start" title="jump to start">⏮</button>
@@ -440,8 +441,9 @@ function buildCalligram(word, emoji) {
 
 /* ---------------- field ---------------- */
 const MAX_VISIBLE = 10;
-let viewMode = "cloud";       // "cloud" | "trace" (layer × token view)
+let viewMode = "cloud";       // "cloud" | "trace" | "vector"
 let traceWord = null;         // the word the trace view follows
+let residualHover = null;
 const field = {
   thoughts: new Map(), pulses: [],
   dominant: { word: null, run: 0 }, lastCalligram: new Map(),
@@ -507,6 +509,7 @@ const field = {
 
   render(now) {
     if (viewMode === "trace") { renderTrace(); return; }
+    if (viewMode === "vector") { renderResidual(); return; }
     ctx.clearRect(0, 0, W, H);
 
     // rails — hairline guides with quiet labels
@@ -666,6 +669,67 @@ function renderTrace() {
   ctx.fillText(`strength across layers × ${N} tokens`, TRACE_X0 + lw + 14, topY - 27);
 }
 
+/* ---------------- residual fingerprint ----------------
+   A fixed signed feature-hash projection uses every residual coordinate while
+   keeping each frame compact. Each row is a model layer; columns are stable
+   projected features. Values are normalized by that layer's coordinate RMS,
+   clipped to ±3 z-like units, and quantized to signed int8 on the server. */
+const RESID_X0 = 60, RESID_RIGHT = 76;
+function residualFrame() { return cursor >= 0 ? frames[cursor] : null; }
+function residualGeometry(frame) {
+  const rows = (frame && frame.resid) || [];
+  const bins = rows.length ? rows[0][2].length : 64;
+  return { rows, bins, cellW: (W - RESID_X0 - RESID_RIGHT) / Math.max(1, bins) };
+}
+function renderResidual() {
+  ctx.clearRect(0, 0, W, H);
+  const frame = residualFrame();
+  const { rows, bins, cellW } = residualGeometry(frame);
+  const topY = RAILS.length ? railY(RAILS[0].frac) : 55;
+  const botY = RAILS.length ? railY(RAILS[RAILS.length - 1].frac) : H - 55;
+
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "rgba(255,255,255,.84)"; ctx.font = `500 16px Inter, sans-serif`;
+  ctx.fillText("residual fingerprint", RESID_X0, topY - 31);
+  ctx.fillStyle = "rgba(255,255,255,.34)"; ctx.font = `10px ${MONO}`;
+  ctx.fillText(`${bins} signed hash features · normalized by layer RMS · red − / blue +`, RESID_X0, topY - 15);
+
+  if (!rows.length) {
+    ctx.fillStyle = "rgba(255,255,255,.3)"; ctx.font = `13px Inter, sans-serif`;
+    ctx.fillText(frames.length ? "this replay has no residual fingerprint data"
+                               : "send a message, then switch to vector", RESID_X0, (topY + botY) / 2);
+    return;
+  }
+
+  const rowH = Math.max(8, Math.min(18, (botY - topY) / Math.max(1, rows.length) * .58));
+  for (const [layer, rms, values] of rows) {
+    const y = railY(layer / (nLayersG - 1));
+    ctx.fillStyle = "rgba(255,255,255,.22)"; ctx.font = `10px ${MONO}`;
+    ctx.textBaseline = "middle"; ctx.fillText("L" + layer, 18, y);
+    ctx.fillStyle = "rgba(255,255,255,.22)";
+    ctx.fillText(`rms ${Number(rms).toFixed(3)}`, W - RESID_RIGHT + 8, y);
+    for (let column = 0; column < values.length; column++) {
+      const value = values[column], magnitude = Math.abs(value) / 127;
+      const rgb = value < 0 ? "224,92,105" : "82,168,224";
+      ctx.fillStyle = magnitude < .015
+        ? "rgba(255,255,255,.025)"
+        : `rgba(${rgb},${(0.10 + 0.88 * magnitude).toFixed(3)})`;
+      ctx.fillRect(RESID_X0 + column * cellW, y - rowH / 2, Math.max(1, cellW - .7), rowH);
+    }
+  }
+
+  if (residualHover) {
+    const { layer, column, value, rms, y } = residualHover;
+    const x = RESID_X0 + column * cellW;
+    ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.lineWidth = 1;
+    ctx.strokeRect(x - .5, y - rowH / 2 - .5, Math.max(1.5, cellW), rowH + 1);
+    ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = `10px ${MONO}`;
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(`L${layer} · feature ${column + 1}/${bins} · ${(value / 127 * 3).toFixed(2)}σ · rms ${Number(rms).toFixed(4)}`,
+      RESID_X0, botY + 28);
+  }
+}
+
 /* ---------------- pointer: hover + inspect ---------------- */
 const inspectEl = document.getElementById("inspect");
 const sparkEl = document.getElementById("in-spark");
@@ -682,10 +746,29 @@ function hitTest(mx, my) {
 }
 canvas.addEventListener("pointermove", e => {
   if (viewMode === "trace") { canvas.style.cursor = frames.length ? "col-resize" : "default"; return; }
+  if (viewMode === "vector") {
+    const frame = residualFrame(), geometry = residualGeometry(frame);
+    residualHover = null;
+    if (geometry.rows.length && e.offsetX >= RESID_X0 && e.offsetX < W - RESID_RIGHT) {
+      const column = Math.max(0, Math.min(geometry.bins - 1,
+        Math.floor((e.offsetX - RESID_X0) / geometry.cellW)));
+      let nearest = null, distance = Infinity;
+      for (const row of geometry.rows) {
+        const y = railY(row[0] / (nLayersG - 1)), delta = Math.abs(e.offsetY - y);
+        if (delta < distance) { distance = delta; nearest = { row, y }; }
+      }
+      if (nearest && distance < 18) residualHover = {
+        layer: nearest.row[0], rms: nearest.row[1], value: nearest.row[2][column], column, y: nearest.y,
+      };
+    }
+    canvas.style.cursor = residualHover ? "crosshair" : "default";
+    return;
+  }
   field.hovered = hitTest(e.offsetX, e.offsetY);
   canvas.style.cursor = field.hovered ? "pointer" : "default";
 });
 canvas.addEventListener("click", e => {
+  if (viewMode === "vector") return;
   if (viewMode === "trace") {
     if (!frames.length) return;
     const i = Math.round((e.offsetX - TRACE_X0 - traceColW() / 2) / traceColW());
@@ -699,6 +782,7 @@ document.querySelectorAll("#viewtoggle .v").forEach(el => el.addEventListener("c
   viewMode = el.dataset.v;
   document.querySelectorAll("#viewtoggle .v").forEach(o => o.classList.toggle("on", o === el));
   if (viewMode === "trace" && !traceWord && frames.length) traceWord = (computeWordStats()[0] || {}).word || null;
+  if (viewMode !== "vector") residualHover = null;
 }));
 document.querySelector("#inspect .x").onclick = () => {
   field.selected = null; inspectEl.style.display = "none";
@@ -890,6 +974,7 @@ function resetViz() {
   field.dominant = { word: null, run: 0 };
   field.selected = null; field.hovered = null; inspectEl.style.display = "none";
   ledger.innerHTML = ""; tmRows.innerHTML = ""; words.innerHTML = ""; traceWord = null;
+  residualHover = null;
   stat("s-read", 0); stat("s-said", 0); stat("s-thoughts", 0); stat("s-tps", "–");
   tScrub.max = 0; tScrub.value = 0; tRead.textContent = "tok 0 / 0";
   setPlayIcon(); setLiveState();

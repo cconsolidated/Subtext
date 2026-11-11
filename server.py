@@ -20,6 +20,12 @@ from fastapi.responses import FileResponse
 
 from subtext.config import SubtextConfig, load_config
 from subtext.models import ModelBundle, load_model_bundle
+from subtext.residuals import (
+    DEFAULT_CLIP_Z,
+    DEFAULT_FINGERPRINT_BINS,
+    build_projection,
+    quantized_fingerprint,
+)
 
 
 HERE = pathlib.Path(__file__).parent
@@ -33,6 +39,7 @@ class RuntimeState:
     viz_layers: tuple[int, ...]
     layer_depth: dict[int, float]
     display_mask: Any
+    residual_projection: Any
 
 
 _runtime: RuntimeState | None = None
@@ -93,12 +100,20 @@ def initialize_runtime(config_path: str | pathlib.Path = DEFAULT_CONFIG) -> Runt
         layer: bundle.lens.jacobians[layer].to(bundle.device) for layer in viz_layers
     }
     display_mask = _build_display_mask(config, bundle)
+    residual_width = bundle.hf_model.get_output_embeddings().weight.shape[1]
+    residual_projection = build_projection(
+        bundle.torch,
+        residual_width,
+        bins=DEFAULT_FINGERPRINT_BINS,
+        device=bundle.device,
+    )
     _runtime = RuntimeState(
         config=config,
         bundle=bundle,
         viz_layers=viz_layers,
         layer_depth=layer_depth,
         display_mask=display_mask,
+        residual_projection=residual_projection,
     )
     print(f"[subtext] reading layers {list(viz_layers)} of {n_layers}")
     print(f"[subtext] display vocabulary: {int(display_mask.sum())} word tokens")
@@ -177,6 +192,21 @@ def readout(residuals: dict[int, Any], position: int) -> list[dict[str, Any]]:
     return output[: runtime.config.viewer.max_words_per_frame]
 
 
+def residual_fingerprint(residuals: dict[int, Any], position: int) -> list[list[Any]]:
+    """Return compact signed residual sketches for every visualization layer."""
+
+    runtime = require_runtime()
+    fingerprint: list[list[Any]] = []
+    for layer in runtime.viz_layers:
+        rms, values = quantized_fingerprint(
+            residuals[layer][0, position],
+            runtime.residual_projection,
+            clip_z=DEFAULT_CLIP_Z,
+        )
+        fingerprint.append([layer, rms, values])
+    return fingerprint
+
+
 def _template_ids(messages: list[dict[str, Any]], add_generation: bool) -> Any:
     runtime = require_runtime()
     output = runtime.bundle.tokenizer.apply_chat_template(
@@ -223,6 +253,12 @@ async def ws_chat(websocket: WebSocket):
                 "model": runtime.config.artifacts.model.repository.split("/")[-1],
                 "n_layers": bundle.model_adapter.n_layers,
                 "layers": runtime.viz_layers,
+                "residual_view": {
+                    "kind": "signed_hash_projection",
+                    "bins": DEFAULT_FINGERPRINT_BINS,
+                    "clip_z": DEFAULT_CLIP_Z,
+                    "normalization": "per-layer coordinate RMS",
+                },
             }
         )
     )
@@ -249,6 +285,7 @@ async def ws_chat(websocket: WebSocket):
                         "phase": "reading",
                         "tok": token_text,
                         "thoughts": readout(residuals, position),
+                        "resid": residual_fingerprint(residuals, position),
                     }
                     await websocket.send_text(json.dumps(frame))
                     await asyncio.sleep(0)
@@ -283,6 +320,7 @@ async def ws_chat(websocket: WebSocket):
                         "phase": "thinking",
                         "out": bundle.tokenizer.decode([next_token]),
                         "thoughts": readout(catcher.acts, -1),
+                        "resid": residual_fingerprint(catcher.acts, -1),
                     }
                     await websocket.send_text(json.dumps(frame))
                     await asyncio.sleep(0)

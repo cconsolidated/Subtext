@@ -126,6 +126,12 @@ kept, so the whole display can be paused and re-inspected.
   amber while reading, blue while generating. It shows a concept climbing the
   stack — and igniting across it just before being spoken — structure the
   instantaneous cloud cannot show. Click anywhere on it to seek.
+- **The vector view** adds a layer-by-feature heatmap of the residual stream at
+  the selected token. Blue cells are positive and red cells negative. Every raw
+  coordinate contributes through a fixed 64-feature signed-hash projection;
+  rows are normalized by their coordinate RMS and the RMS is shown separately.
+  This fingerprint supports honest state-to-state comparison, but its columns
+  are not learned concepts and should not be interpreted semantically.
 
 ## Method
 
