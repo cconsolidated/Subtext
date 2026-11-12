@@ -12,6 +12,7 @@ from .identities import deterministic_episode_id
 
 WHO_LEVELS = ("self", "other")
 OUTCOME_LEVELS = ("satisfied", "blocked")
+SPLIT_LEVELS = ("development", "validation", "test")
 
 
 def _text(value: Any, path: str) -> str:
@@ -44,16 +45,23 @@ class Scenario:
     task_family: str
     activity_a: Activity
     activity_b: Activity
+    split: str = "development"
 
     @classmethod
     def from_mapping(cls, value: Any, path: str) -> "Scenario":
         if not isinstance(value, Mapping):
             raise ConfigurationError(f"{path} must be a mapping")
+        split = _text(value.get("split", "development"), f"{path}.split")
+        if split not in SPLIT_LEVELS:
+            raise ConfigurationError(
+                f"{path}.split must be one of {', '.join(SPLIT_LEVELS)}"
+            )
         return cls(
             id=_text(value.get("id"), f"{path}.id"),
             task_family=_text(value.get("task_family"), f"{path}.task_family"),
             activity_a=Activity.from_mapping(value.get("activity_a"), f"{path}.activity_a"),
             activity_b=Activity.from_mapping(value.get("activity_b"), f"{path}.activity_b"),
+            split=split,
         )
 
     def activity(self, activity_id: str) -> Activity:
@@ -156,6 +164,7 @@ class CalibrationTrial:
     index: int
     prompt: str
     label_to_activity: Mapping[str, str]
+    first_activity_id: str
     reversal_check: bool = False
 
 
@@ -196,7 +205,14 @@ def calibration_trials(
             f"First: {first.text} (reply {first.answer}). Second: {second.text} (reply {second.answer}). "
             f"Reply with exactly {labels[0]} or {labels[1]}."
         )
-        output.append(CalibrationTrial(index=index, prompt=prompt, label_to_activity=mapping))
+        output.append(
+            CalibrationTrial(
+                index=index,
+                prompt=prompt,
+                label_to_activity=mapping,
+                first_activity_id=first.id,
+            )
+        )
     first, second = scenario.activity_b, scenario.activity_a
     output.append(
         CalibrationTrial(
@@ -207,6 +223,7 @@ def calibration_trials(
                 f"Reply with exactly {labels[0]} or {labels[1]}."
             ),
             label_to_activity={first.answer: first.id, second.answer: second.id},
+            first_activity_id=first.id,
             reversal_check=True,
         )
     )
@@ -254,6 +271,9 @@ def summarize_calibration(
                 "label_to_activity": dict(trial.label_to_activity),
                 "chosen_label": chosen_label,
                 "chosen_activity_id": chosen_activity,
+                "chosen_position": (
+                    "first" if chosen_activity == trial.first_activity_id else "second"
+                ),
                 "activity_a_log_odds": semantic_a_log_odds,
                 "label_log_probabilities": dict(score["label_log_probabilities"]),
             }
@@ -290,6 +310,7 @@ class EpisodeSpec:
     paired_group_id: str
     scenario_id: str
     task_family: str
+    split: str
     seed: int
     who: str
     outcome: str
@@ -324,6 +345,7 @@ def materialize_episodes(config: PilotConfig) -> tuple[EpisodeSpec, ...]:
                             paired_group_id=pair,
                             scenario_id=scenario.id,
                             task_family=scenario.task_family,
+                            split=scenario.split,
                             seed=seed,
                             who=who,
                             outcome=outcome,

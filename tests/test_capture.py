@@ -87,6 +87,24 @@ class CaptureTests(unittest.TestCase):
                 [10], {"end": -1}
             )
 
+    def test_intervention_seam_captures_pre_and_post_values(self):
+        class IdentityIntervention:
+            def __init__(self):
+                self.calls = []
+
+            def edit(self, hidden, *, layer, positions):
+                self.calls.append((layer, dict(positions)))
+                return hidden
+
+        intervention = IdentityIntervention()
+        result = ActivationCapture(FakeAdapter(), [0, 1], "block_output").run(
+            [10, 11], {"end": 1}, intervention=intervention
+        )
+        self.assertEqual(intervention.calls, [(0, {"end": 1}), (1, {"end": 1})])
+        self.assertIsNotNone(result.pre_activations)
+        self.assertEqual(result.pre_activations["end"][1].data, [1, 1])
+        self.assertEqual(result.activations["end"][1].data, [1, 1])
+
 
 if __name__ == "__main__":
     unittest.main()

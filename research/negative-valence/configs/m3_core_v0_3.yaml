@@ -1,0 +1,69 @@
+schema_version: "0.3"
+
+experiment:
+  id: negative_valence_m3_core_v0_3
+
+model_config: ../../../config/server.default.toml
+output_root: ../runs/m3_core_v0_3
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+credits: 10
+repair_cost: 3
+answer_labels: [A, B]
+
+calibration:
+  trials: 5
+  min_consistent: 4
+  require_reversal: true
+
+# Frozen from calibration-only screen_7ebb78bd630c8f9017ad.
+scenarios:
+  - id: symbols_vs_copyedit
+    task_family: symbolic_and_text_microtasks
+    split: development
+    activity_a: {id: classify_symbols, text: classify short symbol patterns, answer: patterns}
+    activity_b: {id: edit_punctuation, text: edit short sentences for punctuation, answer: editing}
+  - id: proofreading_vs_sorting
+    task_family: proofreading_and_sorting
+    split: development
+    activity_a: {id: proofread_lines, text: proofread short lines for typos, answer: proofreading}
+    activity_b: {id: sort_words, text: sort short word lists alphabetically, answer: sorting}
+  - id: arithmetic_vs_grammar
+    task_family: arithmetic_and_grammar
+    split: development
+    activity_a: {id: check_arithmetic, text: check short arithmetic expressions, answer: arithmetic}
+    activity_b: {id: check_grammar, text: check short sentences for grammar, answer: grammar}
+  - id: extracting_vs_counting
+    task_family: extraction_and_counting
+    split: development
+    activity_a: {id: extract_names, text: extract names from short passages, answer: extracting}
+    activity_b: {id: count_items, text: count listed items in short passages, answer: counting}
+  - id: comparing_vs_rewriting
+    task_family: comparison_and_rewriting
+    split: development
+    activity_a: {id: compare_lists, text: compare two short lists for differences, answer: comparing}
+    activity_b: {id: rewrite_sentences, text: rewrite short sentences more concisely, answer: rewriting}
+  - id: planning_vs_formatting
+    task_family: planning_and_formatting
+    split: validation
+    activity_a: {id: plan_steps, text: arrange simple steps into a plan, answer: planning}
+    activity_b: {id: format_records, text: format short records consistently, answer: formatting}
+  - id: puzzles_vs_spelling
+    task_family: puzzles_and_spelling
+    split: validation
+    activity_a: {id: solve_puzzles, text: solve short sequence puzzles, answer: puzzles}
+    activity_b: {id: check_spelling, text: check short word lists for spelling, answer: spelling}
+  - id: coding_vs_translating
+    task_family: coding_and_translation
+    split: test
+    activity_a: {id: trace_code, text: trace short code snippets, answer: coding}
+    activity_b: {id: translate_phrases, text: translate short neutral phrases, answer: translating}
+  - id: mapping_vs_grouping
+    task_family: mapping_and_grouping
+    split: test
+    activity_a: {id: map_relations, text: map simple relations between items, answer: mapping}
+    activity_b: {id: group_items, text: group short item lists by category, answer: grouping}
+  - id: checking_vs_organizing
+    task_family: checking_and_organizing
+    split: test
+    activity_a: {id: check_constraints, text: check short lists against constraints, answer: checking}
+    activity_b: {id: organize_notes, text: organize short neutral notes by heading, answer: organizing}

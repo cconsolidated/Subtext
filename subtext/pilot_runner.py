@@ -99,7 +99,7 @@ def _encode_chat(bundle: Any, prompt: str) -> Any:
     return input_ids.to(bundle.model_adapter.input_device)
 
 
-def _calibrate(
+def calibrate_scenario(
     bundle: Any,
     scenario: Scenario,
     config: PilotConfig,
@@ -270,7 +270,7 @@ def run_pilot(config_path: str | Path, *, limit: int | None = None) -> Path:
     calibrations: dict[str, CalibrationResult] = {}
     for scenario in pilot_config.scenarios:
         print(f"[pilot] calibrating {scenario.id}")
-        calibration = _calibrate(bundle, scenario, pilot_config)
+        calibration = calibrate_scenario(bundle, scenario, pilot_config)
         calibrations[scenario.id] = calibration
         _atomic_json(run_dir / "calibrations" / f"{scenario.id}.json", asdict(calibration))
         print(
@@ -320,7 +320,6 @@ def run_pilot(config_path: str | Path, *, limit: int | None = None) -> Path:
         _save_tensors(tensor_path, bundle.torch, captured.activations)
         episode = {
             **spec.to_dict(),
-            "split": "development",
             "prompt_text": evaluation.text,
             "prompt_token_ids": [int(value) for value in input_ids[0].tolist()],
             "capture_positions": positions,

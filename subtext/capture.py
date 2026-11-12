@@ -26,6 +26,7 @@ class ModelAdapter(Protocol):
 class CapturedForward:
     output: Any
     activations: Mapping[str, Mapping[int, Any]]
+    pre_activations: Mapping[str, Mapping[int, Any]] | None = None
 
 
 def _detach_clone_cpu(tensor: Any) -> Any:
@@ -71,8 +72,6 @@ class ActivationCapture:
         capture_positions: Mapping[str, int],
         intervention: Any | None = None,
     ) -> CapturedForward:
-        if intervention is not None:
-            raise NotImplementedError("interventions are introduced after the M0 baseline")
         if not capture_positions:
             raise CaptureError("at least one named capture position is required")
         for name, position in capture_positions.items():
@@ -90,11 +89,22 @@ class ActivationCapture:
         activations: dict[str, dict[int, Any]] = {
             name: {} for name in capture_positions
         }
+        pre_activations: dict[str, dict[int, Any]] | None = (
+            {name: {} for name in capture_positions} if intervention is not None else None
+        )
         handles: list[HookHandle] = []
 
         def make_hook(layer: int):
             def hook(_module: Any, _inputs: Any, output: Any) -> None:
                 hidden = output[0] if isinstance(output, tuple) else output
+                if pre_activations is not None:
+                    for name, position in capture_positions.items():
+                        pre_activations[name][layer] = _detach_clone_cpu(hidden[0, position])
+                    hidden = intervention.edit(
+                        hidden,
+                        layer=layer,
+                        positions=capture_positions,
+                    )
                 for name, position in capture_positions.items():
                     try:
                         vector = hidden[0, position]
@@ -103,6 +113,11 @@ class ActivationCapture:
                             f"position {name!r}={position} is invalid at layer {layer}"
                         ) from exc
                     activations[name][layer] = _detach_clone_cpu(vector)
+                if intervention is not None:
+                    if isinstance(output, tuple):
+                        return (hidden, *output[1:])
+                    return hidden
+                return None
 
             return hook
 
@@ -122,4 +137,8 @@ class ActivationCapture:
         }
         if missing:
             raise CaptureError(f"hooks did not fire for all requested layers: {missing}")
-        return CapturedForward(output=output, activations=activations)
+        return CapturedForward(
+            output=output,
+            activations=activations,
+            pre_activations=pre_activations,
+        )

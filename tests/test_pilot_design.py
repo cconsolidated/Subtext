@@ -106,6 +106,10 @@ class PilotDesignTests(unittest.TestCase):
                     scenario.activity_b.answer: scenario.activity_b.id,
                 },
             )
+            expected_first = (
+                scenario.activity_b.id if trial.index % 2 else scenario.activity_a.id
+            )
+            self.assertEqual(trial.first_activity_id, expected_first)
         scores = []
         for trial in trials:
             chosen_label = next(

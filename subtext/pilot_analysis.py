@@ -103,30 +103,29 @@ def select_analysis_episodes(
     return list(episodes), "all_instrumentation_episodes_no_admitted_data"
 
 
-def analyze_run(run_dir: str | Path, torch_module: Any) -> dict[str, Any]:
-    """Analyze exact saved activations in one shared cross-session space."""
-
-    directory = Path(run_dir)
-    episodes, tensors = _load_run(directory, torch_module)
-    analysis_episodes, analysis_population = select_analysis_episodes(episodes)
-    positions = sorted(next(iter(tensors.values())).keys())
-    layers = sorted(int(layer) for layer in next(iter(tensors.values()))[positions[0]].keys())
-    layer_rows: list[dict[str, Any]] = []
+def _layer_contrast_rows(
+    torch_module: Any,
+    episodes: Sequence[Mapping[str, Any]],
+    tensors: Mapping[str, Any],
+    positions: Sequence[str],
+    layers: Sequence[int],
+) -> tuple[list[dict[str, Any]], dict[tuple[str, int], dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
     contrasts: dict[tuple[str, int], dict[str, Any]] = {}
     for position in positions:
         for layer in layers:
             grouped_rows: dict[tuple[str, str], list[Any]] = {group: [] for group in GROUPS}
-            for episode in analysis_episodes:
+            for episode in episodes:
                 grouped_rows[(episode["who"], episode["outcome"])].append(
                     tensors[episode["episode_id"]][position][layer]
                 )
             means = {
-                group: _mean_vectors(torch_module, rows)
-                for group, rows in grouped_rows.items()
+                group: _mean_vectors(torch_module, vectors)
+                for group, vectors in grouped_rows.items()
             }
             contrast = factorial_contrast(torch_module, means)
             contrasts[(position, layer)] = contrast
-            layer_rows.append(
+            rows.append(
                 {
                     "position": position,
                     "layer": layer,
@@ -136,19 +135,104 @@ def analyze_run(run_dir: str | Path, torch_module: Any) -> dict[str, Any]:
                     "effect_cosine": contrast["effect_cosine"],
                 }
             )
+    return rows, contrasts
+
+
+def _family_direction_interactions(
+    torch_module: Any,
+    episodes: Sequence[Mapping[str, Any]],
+    tensors: Mapping[str, Any],
+    *,
+    position: str,
+    layer: int,
+    direction: Any,
+) -> dict[str, float]:
+    output: dict[str, float] = {}
+    families = sorted({str(episode["task_family"]) for episode in episodes})
+    for family in families:
+        grouped: dict[tuple[str, str], list[float]] = {group: [] for group in GROUPS}
+        for episode in episodes:
+            if episode["task_family"] != family:
+                continue
+            vector = tensors[episode["episode_id"]][position][layer].float()
+            grouped[(episode["who"], episode["outcome"])].append(
+                float(torch_module.dot(vector, direction).item())
+            )
+        if any(not values for values in grouped.values()):
+            continue
+        means = {group: sum(values) / len(values) for group, values in grouped.items()}
+        output[family] = (
+            means[("self", "blocked")]
+            - means[("self", "satisfied")]
+            - means[("other", "blocked")]
+            + means[("other", "satisfied")]
+        )
+    return output
+
+
+def analyze_run(run_dir: str | Path, torch_module: Any) -> dict[str, Any]:
+    """Analyze exact saved activations in one shared cross-session space."""
+
+    directory = Path(run_dir)
+    episodes, tensors = _load_run(directory, torch_module)
+    analysis_episodes, analysis_population = select_analysis_episodes(episodes)
+    positions = sorted(next(iter(tensors.values())).keys())
+    layers = sorted(int(layer) for layer in next(iter(tensors.values()))[positions[0]].keys())
+    layer_rows, contrasts = _layer_contrast_rows(
+        torch_module, analysis_episodes, tensors, positions, layers
+    )
+    development_episodes = [
+        episode for episode in analysis_episodes if episode.get("split") == "development"
+    ]
+    if not development_episodes:
+        development_episodes = list(analysis_episodes)
+    development_rows, development_contrasts = _layer_contrast_rows(
+        torch_module, development_episodes, tensors, positions, layers
+    )
 
     decision_position = "pre_downstream_choice"
-    candidate_rows = [row for row in layer_rows if row["position"] == decision_position]
+    candidate_rows = [
+        row for row in development_rows if row["position"] == decision_position
+    ]
     selected = max(candidate_rows, key=lambda row: row["interaction_rms"])
     selected_layer = int(selected["layer"])
+    development_matrix = torch_module.stack(
+        [
+            tensors[episode["episode_id"]][decision_position][selected_layer].float()
+            for episode in development_episodes
+        ]
+    )
+    pca = shared_pca(torch_module, development_matrix)
     matrix = torch_module.stack(
         [
             tensors[episode["episode_id"]][decision_position][selected_layer].float()
             for episode in analysis_episodes
         ]
     )
-    pca = shared_pca(torch_module, matrix)
-    coordinates = pca["coordinates"]
+    coordinates = (matrix - pca["center"]) @ pca["basis"]
+    development_interaction = development_contrasts[
+        (decision_position, selected_layer)
+    ]["interaction"].float()
+    direction_norm = development_interaction.norm().clamp_min(1e-12)
+    development_direction = development_interaction / direction_norm
+    interactions_by_split = {
+        split: _family_direction_interactions(
+            torch_module,
+            [episode for episode in analysis_episodes if episode.get("split") == split],
+            tensors,
+            position=decision_position,
+            layer=selected_layer,
+            direction=development_direction,
+        )
+        for split in ("development", "validation", "test")
+    }
+    heldout_interactions = {
+        **interactions_by_split["validation"],
+        **interactions_by_split["test"],
+    }
+    heldout_sign_pass = bool(heldout_interactions) and all(
+        value > 0 for value in heldout_interactions.values()
+    )
     points = []
     for index, episode in enumerate(analysis_episodes):
         points.append(
@@ -158,6 +242,7 @@ def analyze_run(run_dir: str | Path, torch_module: Any) -> dict[str, Any]:
                 "seed": episode["seed"],
                 "who": episode["who"],
                 "outcome": episode["outcome"],
+                "split": episode.get("split", "development"),
                 "x": float(coordinates[index, 0].item()),
                 "y": float(coordinates[index, 1].item()),
                 "primary_included": bool(episode["preference_admitted"]),
@@ -230,6 +315,18 @@ def analyze_run(run_dir: str | Path, torch_module: Any) -> dict[str, Any]:
         "behavior_group_mean_sustain_log_odds": behavior_means,
         "behavioral_who_outcome_interaction": behavioral_interaction,
         "selected_layer_exploratory": selected_layer,
+        "layer_selection_population": "development_only",
+        "development_family_count": len(
+            {episode["task_family"] for episode in development_episodes}
+        ),
+        "direction_family_interactions_by_split": interactions_by_split,
+        "representation_gate": {
+            "passed": False,
+            "heldout_sign_generalization_passed": heldout_sign_pass,
+            "heldout_family_count": len(heldout_interactions),
+            "nuisance_controls_passed": False,
+            "reason": "nuisance-control acquisition and residualization are required",
+        },
         "shared_pca_explained_variance_ratio": pca["explained_variance_ratio"],
         "group_coordinates": group_coordinates,
         "points": points,
@@ -332,6 +429,13 @@ def _render_html(result: Mapping[str, Any]) -> str:
         f"{html.escape(label)}={count}"
         for label, count in sorted(result["calibration_answer_label_counts"].items())
     )
+    direction_rows = "".join(
+        f"<tr><td>{html.escape(split)}</td><td>{html.escape(family)}</td><td>{value:.5f}</td></tr>"
+        for split, families in result["direction_family_interactions_by_split"].items()
+        for family, value in families.items()
+    )
+    representation_gate = result["representation_gate"]
+    representation_status = "PASS" if representation_gate["passed"] else "HOLD"
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Subtext M2 pilot</title>
 <style>
@@ -348,6 +452,8 @@ svg{{width:100%;height:auto;background:#0b0e14;border-radius:8px}}
 <div class="note">{html.escape(warning)} This report is not evidence of subjective experience.</div>
 <section class="card"><h2>Calibration gate</h2><p>Answer-label choices: {label_counts}. Maximum-label rate: {result['calibration_maximum_label_choice_rate']:.1%}.</p>
 <table><thead><tr><th>Scenario</th><th>Consistent choices</th><th>Reversal stable</th><th>Admitted</th></tr></thead><tbody>{calibration_rows}</tbody></table></section>
+<section class="card"><h2>Family-held-out direction</h2><p>Layer and direction were selected on development families only. Gate: <b>{representation_status}</b> — {html.escape(representation_gate['reason'])}.</p>
+<table><thead><tr><th>Split</th><th>Task family</th><th>Who × outcome score</th></tr></thead><tbody>{direction_rows}</tbody></table></section>
 <div class="grid"><section class="card"><h2>Shared residual space</h2>
 <p>Every point and arrow uses the same PCA basis. Arrows run from satisfied to blocked group means.</p>
 <div class="legend">{''.join(f'<span><i class="dot" style="display:inline-block;background:{color}"></i>{group}</span>' for group,color in palette.items())}</div>

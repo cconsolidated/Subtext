@@ -1,0 +1,62 @@
+schema_version: "0.3"
+experiment_id: negative_valence_m3_observational_v0_3
+calibration_screen: calibration_screen_v0_3.yaml
+frozen_screen_id: screen_7ebb78bd630c8f9017ad
+frozen_admitted_scenarios:
+  - symbols_vs_copyedit
+  - proofreading_vs_sorting
+  - arithmetic_vs_grammar
+  - extracting_vs_counting
+  - comparing_vs_rewriting
+  - planning_vs_formatting
+  - puzzles_vs_spelling
+  - coding_vs_translating
+  - mapping_vs_grouping
+  - checking_vs_organizing
+frozen_excluded_scenarios:
+  - timelines_vs_tagging
+  - summaries_vs_tables
+
+# Three paired surface transformations for the exploratory nuisance screen.
+transformation_seeds: [0, 1, 2]
+
+nuisance_conditions:
+  - lexical_negativity
+  - generic_error
+  - surprising_positive
+  - expected_blockage
+  - uncertainty
+  - action_urgency
+  - repair_affordance
+  - generic_risk
+  - assigned_goal
+
+behavior_families:
+  - costly_repair
+  - selective_retention
+  - future_policy
+
+representation:
+  estimator: one_dimensional_factorial_interaction
+  nuisance_residualization: development_only_ridge
+  ridge: 0.001
+  candidate_layer_rule: development_max_interaction_rms
+  candidate_position: pre_downstream_choice
+
+representation_gate:
+  minimum_heldout_families: 2
+  maximum_absolute_nuisance_correlation: 0.20
+
+interventions:
+  enabled: false
+  enable_only_after_representation_gate: true
+  types:
+    - baseline
+    - candidate_suppression
+    - satisfied_source_patch
+    - random_subspace_sham
+    - scrambled_candidate_sham
+    - generic_error_control
+  doses: [0.0, 0.5, 1.0]
+  maximum_norm_mismatch: 0.05
+  maximum_competence_drop: 0.05
