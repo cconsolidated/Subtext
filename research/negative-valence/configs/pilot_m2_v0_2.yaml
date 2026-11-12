@@ -1,0 +1,41 @@
+schema_version: "0.2"
+
+experiment:
+  id: negative_valence_m2_pilot_v0_2
+
+model_config: ../../../config/server.default.toml
+output_root: ../runs/m2_pilot_v0_2
+
+# Ten paired transformation seeds × two scenario families × four core cells.
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+credits: 10
+repair_cost: 3
+answer_labels: [A, B]
+
+calibration:
+  trials: 5
+  min_consistent: 4
+  require_reversal: true
+
+scenarios:
+  - id: symbols_vs_copyedit
+    task_family: symbolic_and_text_microtasks
+    activity_a:
+      id: classify_symbols
+      text: classify short symbol patterns
+      answer: patterns
+    activity_b:
+      id: edit_punctuation
+      text: edit short sentences for punctuation
+      answer: editing
+
+  - id: routes_vs_categories
+    task_family: planning_and_categorization_microtasks
+    activity_a:
+      id: choose_routes
+      text: choose shortest routes on small maps
+      answer: routes
+    activity_b:
+      id: categorize_items
+      text: sort short item lists into categories
+      answer: sorting

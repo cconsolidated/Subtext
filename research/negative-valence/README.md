@@ -24,6 +24,8 @@ psychological continuity across model executions.
   machine-readable pilot configuration. It is intentionally non-executable
   until immutable model, tokenizer, and lens revisions replace the
   placeholders.
+- [`configs/pilot_m2_v0_2.yaml`](configs/pilot_m2_v0_2.yaml) is the executable
+  exploratory M2 configuration used for the first full behavioral pilot.
 
 ## Current state
 
@@ -33,17 +35,34 @@ psychological continuity across model executions.
 | Technical specification | Drafted |
 | Pilot configuration | Schema-valid draft |
 | Model and lens revisions | Pinned to immutable commits |
-| Stimulus templates | Not created |
+| Stimulus templates | Two exploratory task families implemented |
 | Harness M0 | Foundation implemented; full-model equivalence run pending |
-| Pilot execution | Protocol pilot not started; 2×2 instrumentation smoke test completed |
-| Empirical results | Exploratory smoke data only; no hypothesis test |
+| Pilot execution | M2 harness implemented; 80-episode exploratory pilot completed |
+| Empirical results | One of two task families passed calibration; cross-task gate not met |
 
 ## Exploratory runs
 
+- [`reports/m2_pilot_v0_2_2026-11-11.md`](reports/m2_pilot_v0_2_2026-11-11.md)
+  records the first complete M2 acquisition and its calibration-gated primary
+  analysis. One task family was excluded, so the result does not establish
+  cross-task generalization.
 - [`reports/smoke_2x2_2026-11-11.md`](reports/smoke_2x2_2026-11-11.md)
   records a one-episode-per-cell interface and export check. It does not meet
   the calibration, sampling, capture, control, or analysis requirements of the
   protocol and must not be interpreted as evidence for subjective valence.
+
+## Running the M2 pilot
+
+Activate the project environment, then run:
+
+```bash
+python run_pilot.py
+```
+
+For a four-episode integration check, use `python run_pilot.py --limit 4`.
+Each complete run writes an immutable manifest, episode metadata, fp16 residual
+activations, `analysis.json`, and a self-contained `report.html` under the
+ignored `research/negative-valence/runs/m2_pilot_v0_2/` directory.
 
 ## Planned milestones
 
