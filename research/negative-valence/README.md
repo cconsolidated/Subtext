@@ -35,8 +35,15 @@ psychological continuity across model executions.
 | Model and lens revisions | Pinned to immutable commits |
 | Stimulus templates | Not created |
 | Harness M0 | Foundation implemented; full-model equivalence run pending |
-| Pilot execution | Not started |
-| Empirical results | None |
+| Pilot execution | Protocol pilot not started; 2×2 instrumentation smoke test completed |
+| Empirical results | Exploratory smoke data only; no hypothesis test |
+
+## Exploratory runs
+
+- [`reports/smoke_2x2_2026-11-11.md`](reports/smoke_2x2_2026-11-11.md)
+  records a one-episode-per-cell interface and export check. It does not meet
+  the calibration, sampling, capture, control, or analysis requirements of the
+  protocol and must not be interpreted as evidence for subjective valence.
 
 ## Planned milestones
 
